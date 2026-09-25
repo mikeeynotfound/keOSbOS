@@ -29,7 +29,6 @@ loader:                                        ; the loader label (defined as en
 
 
 ; More details: https://en.wikibooks.org/wiki/X86_Assembly/Protected_Mode
-global load_gdt
 
 load_gdt:
     push ebp
