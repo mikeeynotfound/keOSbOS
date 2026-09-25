@@ -29,23 +29,27 @@ loader:                                        ; the loader label (defined as en
 
 
 ; More details: https://en.wikibooks.org/wiki/X86_Assembly/Protected_Mode
+global load_gdt
+
 load_gdt:
-    cli
-    mov  eax, [esp+4]
-    lgdt [eax] ; Load GDT from GDTDescriptor, eax at this line will point GDTR location
+    push ebp
+    mov  ebp, esp
 
-    ; Set bit-0 (Protection Enable bit-flag) in Control Register 0 (CR0)
-    ; This is optional, as usually GRUB already start with protected mode flag enabled
+    mov  eax, [ebp+8]      ; ambil pointer ke GDTR (parameter pertama)
+    lgdt [eax]              ; 1. load GDT
+
     mov  eax, cr0
-    or   eax, 1
-    mov  cr0, eax
+    or   eax, 0x1
+    mov  cr0, eax           ; 2. set Protected Mode bit di CR0
 
-    ; Far jump to update cs register
-    ; Warning: Invalid GDT will raise exception in following instruction below
-    jmp 0x8:flush_cs
-flush_cs:
-    mov ax, 10h ; Update all segment register
-    mov ss, ax
-    mov ds, ax
-    mov es, ax
+    jmp  0x08:.flush_cs     ; 3. far jump ke kernel code segment
+
+.flush_cs:
+    mov  ax, 0x10           ; 4. sesuaikan data segment register ke kernel data
+    mov  ds, ax
+    mov  es, ax
+    mov  ss, ax
+
+    mov  esp, ebp
+    pop  ebp
     ret
