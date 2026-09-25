@@ -1,5 +1,5 @@
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include "header/cpu/gdt.h"
 #include "header/cpu/idt.h"
 #include "header/cpu/interrupt.h"
