@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "../stdlib/stdtype.h"
+#include "header/driver/disk.h"
 
 
 /* -- IF2130 File System constants -- */
