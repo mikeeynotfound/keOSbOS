@@ -678,3 +678,25 @@ int8_t write(struct EXT2DriverRequest *request) {
     sync_metadata();
     return 0;
 }
+
+void deallocate_node(uint32_t inode_idx) {
+    (void) inode_idx;
+}
+
+int8_t delete(struct EXT2DriverRequest request) {
+    struct EXT2Inode parent_inode;
+    read_inode(request.parent_inode, &parent_inode);
+    uint32_t target_inode_idx = find_entry(&parent_inode, request.name, request.name_len, request.is_directory ? EXT2_FT_DIR : EXT2_FT_REG_FILE);
+    if (target_inode_idx == 0) {
+        return 1;
+    }
+
+    struct EXT2Inode target_inode;
+    read_inode(target_inode_idx, &target_inode);
+    if (request.is_directory && !is_directory_empty(target_inode_idx)) {
+        return 2;
+    }
+    deallocate_node(target_inode_idx);
+    
+    return 0;
+}
