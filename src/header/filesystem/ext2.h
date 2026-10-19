@@ -5,7 +5,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "header/stdlib/stdtype.h"
 
 
 /* -- IF2130 File System constants -- */
