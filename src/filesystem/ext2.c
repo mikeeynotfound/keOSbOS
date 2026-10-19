@@ -350,3 +350,155 @@ void initialize_filesystem_ext2(void) {
     read_blocks(&b, BGD_TABLE_LBA, 1);
     memcpy(&bgd_table, &b, sizeof(bgd_table));
 }
+
+/* -- Lookup helpers shared by the CRUD interfaces -- */
+
+// Fetch inode metadata from storage
+static void read_inode(uint32_t inode, struct EXT2Inode *node) {
+    struct BlockBuffer b;
+    read_blocks(&b, inode_block(inode), 1);
+    memcpy(node, b.buf + inode_offset(inode), INODE_SIZE);
+}
+
+// An inode is valid when it is in range and marked used in its group's inode bitmap
+static bool is_inode_in_use(uint32_t inode) {
+    if (inode < ROOT_INODE || inode > sb.s_inodes_count)
+        return false;
+
+    struct BlockBuffer bitmap;
+    read_blocks(&bitmap, bgd_table.table[inode_to_bgd(inode)].bg_inode_bitmap, 1);
+    return bit_is_set(bitmap.buf, inode_to_local(inode));
+}
+
+// Load parent_inode into node, false if it is not a usable directory
+static bool load_parent_directory(uint32_t parent_inode, struct EXT2Inode *node) {
+    if (!is_inode_in_use(parent_inode))
+        return false;
+    read_inode(parent_inode, node);
+    return (node->i_mode & EXT2_S_IFDIR) == EXT2_S_IFDIR;
+}
+
+// Block number of the idx-th data block of node (direct, indirect, doubly indirect), 0 if none
+static uint32_t get_block_pointer(const struct EXT2Inode *node, uint32_t idx) {
+    uint32_t table[POINTERS_PER_BLOCK];
+
+    if (idx < DIRECT_BLOCKS)
+        return node->i_block[idx];
+    idx -= DIRECT_BLOCKS;
+
+    if (idx < POINTERS_PER_BLOCK) {
+        if (node->i_block[INDIRECT_SLOT] == 0)
+            return 0;
+        read_blocks(table, node->i_block[INDIRECT_SLOT], 1);
+        return table[idx];
+    }
+    idx -= POINTERS_PER_BLOCK;
+
+    if (idx < POINTERS_PER_BLOCK * POINTERS_PER_BLOCK) {
+        if (node->i_block[DOUBLY_SLOT] == 0)
+            return 0;
+        read_blocks(table, node->i_block[DOUBLY_SLOT], 1);
+        uint32_t ind = table[idx / POINTERS_PER_BLOCK];
+        if (ind == 0)
+            return 0;
+        read_blocks(table, ind, 1);
+        return table[idx % POINTERS_PER_BLOCK];
+    }
+    return 0;
+}
+
+/**
+ * Search a directory for an entry called name.
+ * @param file_type EXT2_FT_REG_FILE / EXT2_FT_DIR to match that type only, EXT2_FT_UNKNOWN to match any
+ * @return inode of the entry, 0 if not found
+ */
+static uint32_t find_entry(const struct EXT2Inode *dir, const char *name, uint8_t name_len, uint8_t file_type) {
+    struct BlockBuffer b;
+
+    for (uint32_t i = 0; i < dir->i_blocks; i++) {
+        uint32_t blk = get_block_pointer(dir, i);
+        if (blk == 0)
+            continue;
+        read_blocks(&b, blk, 1);
+
+        uint32_t offset = 0;
+        while (offset + sizeof(struct EXT2DirectoryEntry) <= BLOCK_SIZE) {
+            struct EXT2DirectoryEntry *entry = get_directory_entry(b.buf, offset);
+            if (entry->rec_len < sizeof(struct EXT2DirectoryEntry)) // corrupted entry, avoid looping forever
+                break;
+
+            if (entry->inode != 0 && entry->name_len == name_len
+                && offset + sizeof(struct EXT2DirectoryEntry) + name_len <= BLOCK_SIZE
+                && (file_type == EXT2_FT_UNKNOWN || entry->file_type == file_type)
+                && memcmp(get_entry_name(entry), name, name_len) == 0)
+                return entry->inode;
+
+            offset += entry->rec_len;
+        }
+    }
+    return 0;
+}
+
+// Copy `size` bytes of node's data blocks into buf; the last partial block never writes past size
+static void read_node_data(const struct EXT2Inode *node, void *buf, uint32_t size) {
+    struct BlockBuffer tail;
+    uint8_t *dst = (uint8_t*) buf;
+
+    for (uint32_t i = 0; i * BLOCK_SIZE < size; i++) {
+        uint32_t blk = get_block_pointer(node, i);
+        uint32_t remaining = size - i * BLOCK_SIZE;
+        if (remaining >= BLOCK_SIZE) {
+            read_blocks(dst + i * BLOCK_SIZE, blk, 1);
+        } else {
+            read_blocks(&tail, blk, 1);
+            memcpy(dst + i * BLOCK_SIZE, tail.buf, remaining);
+        }
+    }
+}
+
+/* -- CRUD: read -- */
+
+int8_t read_directory(struct EXT2DriverRequest *prequest) {
+    if (prequest == NULL || prequest->buf == NULL || prequest->name == NULL || prequest->name_len == 0)
+        return -1;
+
+    struct EXT2Inode parent, target;
+    if (!load_parent_directory(prequest->parent_inode, &parent))
+        return 3;
+
+    uint32_t inode = find_entry(&parent, prequest->name, prequest->name_len, EXT2_FT_DIR);
+    if (inode == 0) {
+        // Name exists but as a file -> not a folder, otherwise it does not exist
+        return find_entry(&parent, prequest->name, prequest->name_len, EXT2_FT_UNKNOWN) != 0 ? 1 : 2;
+    }
+
+    read_inode(inode, &target);
+    uint32_t size = target.i_blocks * BLOCK_SIZE; // directory table is always whole blocks
+    if (prequest->buffer_size < size)
+        return -1; // read_directory has no dedicated "buffer too small" code
+
+    read_node_data(&target, prequest->buf, size);
+    return 0;
+}
+
+int8_t read(struct EXT2DriverRequest request) {
+    if (request.buf == NULL || request.name == NULL || request.name_len == 0)
+        return -1;
+
+    struct EXT2Inode parent, target;
+    if (!load_parent_directory(request.parent_inode, &parent))
+        return 4;
+
+    uint32_t inode = find_entry(&parent, request.name, request.name_len, EXT2_FT_REG_FILE);
+    if (inode == 0) {
+        // Name exists but as a folder -> not a file, otherwise it does not exist
+        return find_entry(&parent, request.name, request.name_len, EXT2_FT_UNKNOWN) != 0 ? 1 : 3;
+    }
+
+    read_inode(inode, &target);
+    if (request.buffer_size < target.i_size)
+        return 2;
+
+    read_node_data(&target, request.buf, target.i_size);
+    return 0;
+}
