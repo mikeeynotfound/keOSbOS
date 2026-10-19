@@ -1,10 +1,10 @@
 #ifndef _EXT2_H
 #define _EXT2_H
 
-#include "disk.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "header/driver/disk.h"
 
 
 /* -- IF2130 File System constants -- */
@@ -13,7 +13,7 @@
 #define EXT2_SUPER_MAGIC 0xEF53 // this indicating that the filesystem used by OS is ext2
 #define INODE_SIZE sizeof(struct EXT2Inode) // size of inode
 #define INODES_PER_TABLE (BLOCK_SIZE / INODE_SIZE) // number of inode per block (512 / )
-#define GROUPS_COUNT (BLOCK_SIZE / sizeof(struct EXT2BlockGroupDescriptor)) / 2u // number of groups in the filesystem
+#define GROUPS_COUNT ((BLOCK_SIZE / sizeof(struct EXT2BlockGroupDescriptor)) / 2u) // number of groups in the filesystem
 #define BLOCKS_PER_GROUP (DISK_SPACE / BLOCK_SIZE / GROUPS_COUNT) // number of blocks per group
 #define INODES_TABLE_BLOCK_COUNT 16u 
 #define INODES_PER_GROUP (INODES_PER_TABLE * INODES_TABLE_BLOCK_COUNT) // number of inodes per group
@@ -61,10 +61,10 @@ struct EXT2DriverRequest
  */
 struct EXT2Superblock
 {
-    uint32_t s_inodes_count;        // 32bit value indicating the total number of inodes, both used and free, in the file system 
-    uint32_t s_blocks_count;        // 32bit value indicating the total number of blocks in the system including all used, free and reserved 
+    uint32_t s_inodes_count;         // 32bit value indicating the total number of inodes, both used and free, in the file system 
+    uint32_t s_blocks_count;         // 32bit value indicating the total number of blocks in the system including all used, free and reserved 
 
-    uint32_t s_r_blocks_count;      // 32bit value indicating the total number of blocks reserved for the usage of the super user. {maybe not used because there is no superuser in our system} 
+    uint32_t s_r_blocks_count;       // 32bit value indicating the total number of blocks reserved for the usage of the super user. {maybe not used because there is no superuser in our system} 
     uint32_t s_free_blocks_count;   // 32bit value indicating the total number of free blocks, including the number of reserved blocks 
     uint32_t s_free_inodes_count;   // 32bit value indicating the total number of free inodes. This is a sum of all free inodes of all the block groups.
     uint32_t s_first_data_block;    // 32bit value identifying the first data block, in other word the id of the block containing the superblock structure.
@@ -205,14 +205,12 @@ struct EXT2DirectoryEntry
     /**
      * 8bit value indicating the length of the file name.
      */
-    uint8_t name_len;
+    uint16_t name_len;
 
     /**
      * 8bit unsigned value used to indicate file type.
      */
     uint8_t file_type;
-
-    char name[255];
 
 }__attribute__((packed));
 
