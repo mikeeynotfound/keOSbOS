@@ -254,26 +254,26 @@ void init_directory_table(struct EXT2Inode *node, uint32_t inode, uint32_t paren
 
     // Entry 0: "." (itself)
     struct EXT2DirectoryEntry *dot = get_directory_entry(b.buf, 0);
-    dot->inode      = inode;
-    dot->name_len   = 1;
+    dot->inode     = inode;
+    dot->name_len  = 1;
     dot->file_type = EXT2_FT_DIR;
-    dot->rec_len    = get_entry_record_len(1);
+    dot->rec_len   = get_entry_record_len(1);
     memcpy(get_entry_name(dot), ".", 1);
 
     // Entry 1: ".." (parent, root points to itself)
     struct EXT2DirectoryEntry *dotdot = get_next_directory_entry(dot);
-    dotdot->inode      = parent_inode;
-    dotdot->name_len   = 2;
+    dotdot->inode     = parent_inode;
+    dotdot->name_len  = 2;
     dotdot->file_type = EXT2_FT_DIR;
-    dotdot->rec_len    = get_entry_record_len(2);
+    dotdot->rec_len   = get_entry_record_len(2);
     memcpy(get_entry_name(dotdot), "..", 2);
 
     // Entry 2: empty entry spanning the rest of the block, so is_directory_empty() can look at it
     struct EXT2DirectoryEntry *free_entry = get_next_directory_entry(dotdot);
-    free_entry->inode      = 0;
-    free_entry->name_len   = 0;
+    free_entry->inode     = 0;
+    free_entry->name_len  = 0;
     free_entry->file_type = EXT2_FT_UNKNOWN;
-    free_entry->rec_len    = (uint16_t) (BLOCK_SIZE - get_dir_first_child_offset(b.buf));
+    free_entry->rec_len   = (uint16_t) (BLOCK_SIZE - get_dir_first_child_offset(b.buf));
 
     memset(node, 0, sizeof(*node));
     node->i_mode   = EXT2_S_IFDIR;
@@ -593,18 +593,18 @@ static void insert_entry(uint32_t blk, uint32_t offset, uint32_t inode, const ch
     // keep the leftover as a free entry only when it can hold a header, otherwise absorb it
     uint16_t rec_len = (span - need >= get_entry_record_len(0)) ? need : span;
 
-    entry->inode      = inode;
-    entry->name_len   = name_len;
+    entry->inode     = inode;
+    entry->name_len  = name_len;
     entry->file_type = file_type;
-    entry->rec_len    = rec_len;
+    entry->rec_len   = rec_len;
     memcpy(get_entry_name(entry), name, name_len);
 
     if (rec_len != span) {
         struct EXT2DirectoryEntry *rest = get_next_directory_entry(entry);
-        rest->inode      = 0;
-        rest->name_len   = 0;
+        rest->inode     = 0;
+        rest->name_len  = 0;
         rest->file_type = EXT2_FT_UNKNOWN;
-        rest->rec_len    = (uint16_t) (span - rec_len);
+        rest->rec_len   = (uint16_t) (span - rec_len);
     }
     write_blocks(&b, blk, 1);
 }

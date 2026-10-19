@@ -4,6 +4,7 @@
 #include "header/cpu/idt.h"
 #include "header/cpu/interrupt.h"
 #include "header/driver/keyboard.h"
+#include "header/filesystem/ext2.h"
 #include "header/kernel-entrypoint.h"
 #include "header/text/framebuffer.h"
 #include "header/filesystem/ext2.h"
@@ -16,6 +17,7 @@ void kernel_setup(void)
     activate_keyboard_interrupt();
     framebuffer_clear();
     framebuffer_set_cursor(0, 0);
+    initialize_filesystem_ext2();
 
     initialize_filesystem_ext2();
 

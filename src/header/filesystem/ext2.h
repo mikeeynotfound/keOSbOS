@@ -61,10 +61,10 @@ struct EXT2DriverRequest
  */
 struct EXT2Superblock
 {
-    uint32_t s_inodes_count;         // 32bit value indicating the total number of inodes, both used and free, in the file system 
-    uint32_t s_blocks_count;         // 32bit value indicating the total number of blocks in the system including all used, free and reserved 
+    uint32_t s_inodes_count;        // 32bit value indicating the total number of inodes, both used and free, in the file system 
+    uint32_t s_blocks_count;        // 32bit value indicating the total number of blocks in the system including all used, free and reserved 
 
-    uint32_t s_r_blocks_count;       // 32bit value indicating the total number of blocks reserved for the usage of the super user. {maybe not used because there is no superuser in our system} 
+    uint32_t s_r_blocks_count;      // 32bit value indicating the total number of blocks reserved for the usage of the super user. {maybe not used because there is no superuser in our system} 
     uint32_t s_free_blocks_count;   // 32bit value indicating the total number of free blocks, including the number of reserved blocks 
     uint32_t s_free_inodes_count;   // 32bit value indicating the total number of free inodes. This is a sum of all free inodes of all the block groups.
     uint32_t s_first_data_block;    // 32bit value identifying the first data block, in other word the id of the block containing the superblock structure.
