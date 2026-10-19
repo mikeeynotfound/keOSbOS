@@ -682,6 +682,7 @@ int8_t write(struct EXT2DriverRequest *request) {
 void deallocate_node(uint32_t inode_idx) {
     (void) inode_idx;
 }
+
 int8_t delete(struct EXT2DriverRequest request) {
     struct EXT2Inode parent_inode;
     read_inode(request.parent_inode, &parent_inode);
