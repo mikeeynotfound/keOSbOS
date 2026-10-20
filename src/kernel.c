@@ -7,7 +7,6 @@
 #include "header/filesystem/ext2.h"
 #include "header/kernel-entrypoint.h"
 #include "header/text/framebuffer.h"
-#include "header/filesystem/ext2.h"
 
 void kernel_setup(void)
 {
@@ -19,7 +18,6 @@ void kernel_setup(void)
     framebuffer_set_cursor(0, 0);
     initialize_filesystem_ext2();
 
-    initialize_filesystem_ext2();
 
     int row = 0, col = 0;
     keyboard_state_activate();
@@ -32,7 +30,15 @@ void kernel_setup(void)
         if (c == '\n') {
             ++row;
             col = 0;
-        } else if (c == '\b') {
+        }
+        else if (c == '\t') {
+            col += 4 - (col % 4);
+            if (col >= FRAMEBUFFER_WIDTH) {
+                ++row;
+                col = 0;
+            }
+        }
+        else if (c == '\b') {
             if (col > 0) {
                 --col;
             } else if (row > 0) {
