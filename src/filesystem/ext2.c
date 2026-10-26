@@ -613,7 +613,7 @@ int8_t write(struct EXT2DriverRequest *request) {
     if (request == NULL || request->name == NULL || request->name_len == 0)
         return -1;
 
-    bool is_dir = (request->buffer_size == 0);
+bool is_dir = (request->buffer_size == 0);
     if (!is_dir && request->buf == NULL)
         return -1;
 

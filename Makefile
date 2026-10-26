@@ -8,6 +8,7 @@ SOURCE_FOLDER = src
 OUTPUT_FOLDER = bin
 ISO_NAME      = OS2025
 DISK_NAME     = storage
+DISK_IMAGE    = $(OUTPUT_FOLDER)/$(DISK_NAME).bin
 
 # Flags
 WARNING_CFLAG = -Wall -Wextra -Werror
@@ -18,15 +19,18 @@ AFLAGS        = -f elf32 -g -F dwarf
 LFLAGS        = -T $(SOURCE_FOLDER)/linker.ld -melf_i386
 
 
-run: all
-	@qemu-system-i386 -s -S -drive file=$(OUTPUT_FOLDER)/$(DISK_NAME).bin,format=raw,if=ide,index=0,media=disk -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
+run: all disk
+	@qemu-system-i386 -s -S -drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
 all: build
 build: iso
 clean:
-	rm -rf *.o *.iso $(OUTPUT_FOLDER)/kernel
+	rm -rf *.o *.iso $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel $(OUTPUT_FOLDER)/iso
 
-disk:
-	@qemu-img create -f raw $(OUTPUT_FOLDER)/$(DISK_NAME).bin 4M
+disk: $(DISK_IMAGE)
+
+$(DISK_IMAGE):
+	@mkdir -p $(OUTPUT_FOLDER)
+	@qemu-img create -f raw $@ 4M
 
 
 
@@ -57,3 +61,5 @@ iso: kernel
 	# TODO: Create ISO image
 	@genisoimage -R -b boot/grub/grub1 -no-emul-boot -boot-load-size 4 -A os -input-charset utf8 -boot-info-table -o $(OUTPUT_FOLDER)/$(ISO_NAME).iso $(OUTPUT_FOLDER)/iso
 	@rm -r $(OUTPUT_FOLDER)/iso/
+
+.PHONY: run all build clean disk kernel iso
