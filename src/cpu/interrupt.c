@@ -2,6 +2,9 @@
 #include "header/cpu/gdt.h"
 #include "header/cpu/portio.h"
 #include "header/driver/keyboard.h"
+#include "header/filesystem/ext2.h"
+#include "header/text/framebuffer.h"
+#include "header/syscall-number.h"
 
 /**
  * Single TSS for the system. ss0 is the kernel data segment used whenever the
@@ -63,6 +66,47 @@ void main_interrupt_handler(struct InterruptFrame frame) {
     switch (frame.int_number) {
         case PIC1_OFFSET + IRQ_KEYBOARD:
             keyboard_isr();
+            break;
+        case SYSCALL_INT_VECTOR:
+            syscall(frame);
+            break;
+        default:
+            break;
+    }
+}
+
+void syscall(struct InterruptFrame frame) {
+    uint32_t ebx = frame.cpu.general.ebx;
+    uint32_t ecx = frame.cpu.general.ecx;
+    uint32_t edx = frame.cpu.general.edx;
+
+    switch (frame.cpu.general.eax) {
+        case SYSCALL_READ:
+            *((int8_t*) ecx) = read(*(struct EXT2DriverRequest*) ebx);
+            break;
+        case SYSCALL_READ_DIRECTORY:
+            *((int8_t*) ecx) = read_directory((struct EXT2DriverRequest*) ebx);
+            break;
+        case SYSCALL_WRITE:
+            *((int8_t*) ecx) = write((struct EXT2DriverRequest*) ebx);
+            break;
+        case SYSCALL_DELETE:
+            *((int8_t*) ecx) = delete(*(struct EXT2DriverRequest*) ebx);
+            break;
+        case SYSCALL_GETCHAR:
+            get_keyboard_buffer((char*) ebx);
+            break;
+        case SYSCALL_PUTCHAR:
+            framebuffer_put_char((char) ebx, (uint8_t) ecx);
+            break;
+        case SYSCALL_PUTS:
+            framebuffer_puts((const char*) ebx, ecx, (uint8_t) edx);
+            break;
+        case SYSCALL_KEYBOARD_ON:
+            keyboard_state_activate();
+            break;
+        case SYSCALL_CLEAR_SCREEN:
+            framebuffer_reset_terminal();
             break;
         default:
             break;
