@@ -19,7 +19,7 @@ void read_blocks(void *ptr, uint32_t logical_block_address, uint8_t block_count)
     for (uint8_t i = 0; i < block_count; i++) {
         ctl_wait();
         for (uint32_t j = 0; j < HALF_BLOCK_SIZE; j++) {
-            *target = in(0x1F0);
+            *target = in16(0x1F0);
             target++;
         }
     }
@@ -39,7 +39,7 @@ void write_blocks(const void *ptr, uint32_t logical_block_address, uint8_t block
     for (uint8_t i = 0; i < block_count; i++) {
         ctl_wait();
         for (uint32_t j = 0; j < HALF_BLOCK_SIZE; j++) {
-            out(0x1F0, *source);
+            out16(0x1F0, *source);
             source++;
         }
     }
