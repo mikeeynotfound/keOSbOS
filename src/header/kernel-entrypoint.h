@@ -12,4 +12,10 @@
  */
 extern void load_gdt(struct GDTR *gdtr);
 
+/**
+ * Set the TSS register pointing to GDT_TSS_SELECTOR at ring 0.
+ * Implemented in kernel-entrypoint.s. gdt_install_tss() must run first.
+ */
+extern void set_tss_register(void);
+
 #endif

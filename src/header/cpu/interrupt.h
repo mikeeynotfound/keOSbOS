@@ -61,6 +61,34 @@
 
 
 /**
+ * Task State Segment (TSS).
+ * In this kernel only esp0/ss0 are used: the CPU loads them when an
+ * inter-privilege interrupt (user -> kernel) occurs. The remaining fields are
+ * present to match the 32-bit TSS layout expected by the hardware.
+ *
+ * @param prev_tss         Previous TSS selector (unused)
+ * @param esp0             Kernel stack pointer loaded on privilege change
+ * @param ss0              Kernel stack segment loaded on privilege change
+ * @param unused_register  Rest of the 32-bit TSS, including the I/O map base
+ */
+struct TSSEntry {
+    uint32_t prev_tss;
+    uint32_t esp0;
+    uint32_t ss0;
+    uint32_t unused_register[23];
+} __attribute__((packed));
+
+// Single TSS shared by the whole system, defined in interrupt.c.
+extern struct TSSEntry _interrupt_tss_entry;
+
+/**
+ * Point TSS.esp0 to the kernel stack of the current call frame.
+ * Call this immediately before returning to user mode.
+ */
+void set_tss_kernel_current_stack(void);
+
+
+/**
  * CPURegister, store CPU registers values.
  * 
  * @param index   CPU index register (di, si)

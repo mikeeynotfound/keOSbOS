@@ -11,8 +11,21 @@
  */
 #define GDT_KERNEL_CODE_SEGMENT_SELECTOR 0x8
 #define GDT_KERNEL_DATA_SEGMENT_SELECTOR 0x10
+/**
+ * User segment selectors. The low two bits are the Requested Privilege Level,
+ * so callers that enter user mode must OR these values with 0x3.
+ */
+#define GDT_USER_CODE_SEGMENT_SELECTOR 0x18
+#define GDT_USER_DATA_SEGMENT_SELECTOR 0x20
+#define GDT_TSS_SELECTOR               0x28
 
 extern struct GDTR _gdt_gdtr;
+
+/**
+ * Fill the TSS descriptor in the GDT with the address of _interrupt_tss_entry.
+ * Must be called after the GDT is loaded and before set_tss_register().
+ */
+void gdt_install_tss(void);
 
 /**
  * Segment Descriptor storing system segment information.

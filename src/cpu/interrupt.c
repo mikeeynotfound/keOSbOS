@@ -1,6 +1,24 @@
 #include "header/cpu/interrupt.h"
+#include "header/cpu/gdt.h"
 #include "header/cpu/portio.h"
 #include "header/driver/keyboard.h"
+
+/**
+ * Single TSS for the system. ss0 is the kernel data segment used whenever the
+ * CPU switches from ring 3 to ring 0 (interrupts and system calls).
+ */
+struct TSSEntry _interrupt_tss_entry = {
+    .ss0 = GDT_KERNEL_DATA_SEGMENT_SELECTOR,
+};
+
+void set_tss_kernel_current_stack(void) {
+    uint32_t stack_ptr;
+    // Read the base stack frame instead of esp so the saved pointer remains
+    // valid after this function returns.
+    __asm__ volatile("mov %%ebp, %0" : "=r"(stack_ptr) : /* <Empty> */);
+    // +4 for the return address and +4 for stack_ptr itself.
+    _interrupt_tss_entry.esp0 = stack_ptr + 8;
+}
 
 void io_wait(void) {
     out(0x80, 0);

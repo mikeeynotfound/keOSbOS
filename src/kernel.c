@@ -18,6 +18,10 @@ void kernel_setup(void)
     framebuffer_set_cursor(0, 0);
     initialize_filesystem_ext2();
 
+    // Prepare ring 3 support. The TSS stays installed for later user mode
+    // entry (and is used by inter-privilege interrupts once user mode runs).
+    gdt_install_tss();
+    set_tss_register();
 
     int row = 0, col = 0;
     keyboard_state_activate();
