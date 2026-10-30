@@ -47,4 +47,28 @@ void framebuffer_set_cursor(uint8_t r, uint8_t c);
  */
 void framebuffer_clear(void);
 
+/**
+ * Print one character at the terminal cursor and advance it.
+ * Handles '\n', '\t' and '\b' (erase previous character), wraps long lines
+ * and scrolls the screen up when the cursor passes the last row.
+ *
+ * @param c     Character
+ * @param color Foreground color, background is always black
+ */
+void framebuffer_put_char(char c, uint8_t color);
+
+/**
+ * Print len characters of str with framebuffer_put_char().
+ *
+ * @param str   String, does not need to be null terminated
+ * @param len   Number of characters to print
+ * @param color Foreground color
+ */
+void framebuffer_puts(const char *str, uint32_t len, uint8_t color);
+
+/**
+ * Clear the screen and move the terminal cursor back to (0, 0).
+ */
+void framebuffer_reset_terminal(void);
+
 #endif
