@@ -1,5 +1,6 @@
 #include "header/cpu/idt.h"
 #include "header/cpu/gdt.h"
+#include "header/cpu/interrupt.h"
 
 /**
  * interrupt_descriptor_table, empty IDT (zero-initialized in .bss).
@@ -19,7 +20,9 @@ struct IDTR _idt_idtr = {
 
 void initialize_idt(void) {
     for (uint8_t i = 0; i < ISR_STUB_TABLE_LIMIT; i++) {
-        set_interrupt_gate(i, isr_stub_table[i], GDT_KERNEL_CODE_SEGMENT_SELECTOR, 0);
+        // Only the syscall gate may be raised from user mode (ring 3)
+        uint8_t privilege = (i == SYSCALL_INT_VECTOR) ? 0x3 : 0x0;
+        set_interrupt_gate(i, isr_stub_table[i], GDT_KERNEL_CODE_SEGMENT_SELECTOR, privilege);
     }
     __asm__ volatile("lidt %0" : : "m"(_idt_idtr));
     __asm__ volatile("sti");

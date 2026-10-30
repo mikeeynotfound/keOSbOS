@@ -11,6 +11,9 @@
 #define PIC1_OFFSET          0x20
 #define PIC2_OFFSET          0x28
 
+// System call interrupt vector, callable from user mode (DPL 3)
+#define SYSCALL_INT_VECTOR   0x30
+
 // PIC ports
 #define PIC1                 0x20
 #define PIC2                 0xA0
@@ -181,5 +184,13 @@ void pic_remap(void);
  * @param frame Information about CPU during interrupt is raised
  */
 void main_interrupt_handler(struct InterruptFrame frame);
+
+/**
+ * System call handler for int 0x30. eax holds the syscall number and
+ * ebx / ecx / edx hold the arguments, see header/syscall-number.h.
+ *
+ * @param frame CPU state of the caller when int 0x30 is raised
+ */
+void syscall(struct InterruptFrame frame);
 
 #endif
