@@ -679,24 +679,130 @@ bool is_dir = (request->buffer_size == 0);
     return 0;
 }
 
+/* -- Delete -- */
+
+static void bit_clear(uint8_t *bitmap, uint32_t bit) {
+    bitmap[bit / 8] &= (uint8_t) ~(1u << (bit % 8));
+}
+
+// Give one block back to its group (bitmap + counters). Unused pointers and double frees are ignored
+static void free_block(uint32_t blk) {
+    uint32_t g = blk / BLOCKS_PER_GROUP;
+    if (blk == 0 || g >= GROUPS_COUNT)
+        return;
+
+    struct BlockBuffer bitmap;
+    uint32_t bit = blk % BLOCKS_PER_GROUP;
+    read_blocks(&bitmap, bgd_table.table[g].bg_block_bitmap, 1);
+    if (!bit_is_set(bitmap.buf, bit))
+        return;
+
+    bit_clear(bitmap.buf, bit);
+    write_blocks(&bitmap, bgd_table.table[g].bg_block_bitmap, 1);
+    bgd_table.table[g].bg_free_blocks_count++;
+    sb.s_free_blocks_count++;
+}
+
+/**
+ * Remove the entry called name from dir by turning it into a free entry.
+ * rec_len is kept, so the entries of the block still tile it exactly and
+ * find_entry_slot() / insert_entry() can reuse the space later.
+ */
+static void unlink_entry(const struct EXT2Inode *dir, const char *name, uint8_t name_len, uint8_t file_type) {
+    struct BlockBuffer b;
+
+    for (uint32_t i = 0; i < dir->i_blocks; i++) {
+        uint32_t blk = get_block_pointer(dir, i);
+        if (blk == 0)
+            continue;
+        read_blocks(&b, blk, 1);
+
+        uint32_t offset = 0;
+        while (offset + sizeof(struct EXT2DirectoryEntry) <= BLOCK_SIZE) {
+            struct EXT2DirectoryEntry *entry = get_directory_entry(b.buf, offset);
+            if (entry->rec_len < sizeof(struct EXT2DirectoryEntry))
+                break;
+
+            if (entry->inode != 0 && entry->name_len == name_len
+                && offset + sizeof(struct EXT2DirectoryEntry) + name_len <= BLOCK_SIZE
+                && entry->file_type == file_type
+                && memcmp(get_entry_name(entry), name, name_len) == 0) {
+                entry->inode     = 0;
+                entry->name_len  = 0;
+                entry->file_type = EXT2_FT_UNKNOWN;
+                write_blocks(&b, blk, 1);
+                return;
+            }
+            offset += entry->rec_len;
+        }
+    }
+}
+
+/**
+ * Free an inode and everything it owns: data blocks, indirect / doubly indirect
+ * pointer tables and the inode bit. Safe to call twice (second call is a no-op).
+ */
 void deallocate_node(uint32_t inode_idx) {
-    (void) inode_idx;
+    if (!is_inode_in_use(inode_idx))
+        return;
+
+    struct EXT2Inode node;
+    read_inode(inode_idx, &node);
+    bool is_dir = (node.i_mode & EXT2_S_IFDIR) == EXT2_S_IFDIR;
+
+    // Data blocks first, while the pointer tables are still readable
+    for (uint32_t i = 0; i < node.i_blocks; i++)
+        free_block(get_block_pointer(&node, i));
+
+    if (node.i_block[INDIRECT_SLOT] != 0)
+        free_block(node.i_block[INDIRECT_SLOT]);
+
+    if (node.i_block[DOUBLY_SLOT] != 0) {
+        uint32_t table[POINTERS_PER_BLOCK];
+        read_blocks(table, node.i_block[DOUBLY_SLOT], 1);
+        for (uint32_t k = 0; k < POINTERS_PER_BLOCK; k++)
+            free_block(table[k]);
+        free_block(node.i_block[DOUBLY_SLOT]);
+    }
+
+    // Release the inode itself
+    uint32_t g = inode_to_bgd(inode_idx);
+    struct BlockBuffer bitmap;
+    read_blocks(&bitmap, bgd_table.table[g].bg_inode_bitmap, 1);
+    bit_clear(bitmap.buf, inode_to_local(inode_idx));
+    write_blocks(&bitmap, bgd_table.table[g].bg_inode_bitmap, 1);
+    bgd_table.table[g].bg_free_inodes_count++;
+    sb.s_free_inodes_count++;
+    if (is_dir)
+        bgd_table.table[g].bg_used_dirs_count--;
+
+    memset(&node, 0, sizeof(node)); // wipe stale metadata
+    sync_node(&node, inode_idx);
+    sync_metadata();
 }
 
 int8_t delete(struct EXT2DriverRequest request) {
-    struct EXT2Inode parent_inode;
-    read_inode(request.parent_inode, &parent_inode);
-    uint32_t target_inode_idx = find_entry(&parent_inode, request.name, request.name_len, request.is_directory ? EXT2_FT_DIR : EXT2_FT_REG_FILE);
-    if (target_inode_idx == 0) {
-        return 1;
-    }
+    if (request.name == NULL || request.name_len == 0)
+        return -1;
 
-    struct EXT2Inode target_inode;
-    read_inode(target_inode_idx, &target_inode);
-    if (request.is_directory && !is_directory_empty(target_inode_idx)) {
+    struct EXT2Inode parent;
+    if (!load_parent_directory(request.parent_inode, &parent))
+        return 3;
+
+    // "." and ".." are structural entries of every directory, never deletable
+    if ((request.name_len == 1 && request.name[0] == '.')
+        || (request.name_len == 2 && request.name[0] == '.' && request.name[1] == '.'))
+        return 1;
+
+    uint8_t file_type = request.is_directory ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
+    uint32_t target = find_entry(&parent, request.name, request.name_len, file_type);
+    if (target == 0)
+        return 1;
+
+    if (request.is_directory && !is_directory_empty(target))
         return 2;
-    }
-    deallocate_node(target_inode_idx);
-    
+
+    unlink_entry(&parent, request.name, request.name_len, file_type);
+    deallocate_node(target);
     return 0;
 }

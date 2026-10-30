@@ -18,4 +18,10 @@ extern void load_gdt(struct GDTR *gdtr);
  */
 extern void set_tss_register(void);
 
+/**
+ * Execute user program from kernel, one way jump. Implemented in kernel-entrypoint.s.
+ * User stack pointer is set to virtual_addr + 4 MiB - 4, so that region must be mapped.
+ */
+extern void kernel_execute_user_program(void *virtual_addr);
+
 #endif
