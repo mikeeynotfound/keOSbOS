@@ -10,6 +10,8 @@
 #define FIND_DEPTH_MAX  16
 #define DIR_BUFFER_SIZE (32 * BLOCK_SIZE)
 #define FILE_BUFFER_SIZE (128 * BLOCK_SIZE)
+#define PIPE_MAX        8
+#define PIPE_BUFFER_SIZE (32 * 1024)
 
 #define COLOR_TEXT   0x7
 #define COLOR_PROMPT 0xA
@@ -20,6 +22,14 @@
 static char     line[LINE_MAX];
 static uint8_t  dir_buffer[DIR_BUFFER_SIZE];
 static uint8_t  file_buffer[FILE_BUFFER_SIZE];
+
+// Pipeline: stage N writes into pipe_out when capture_output is set, then it becomes pipe_in of stage N+1
+static char     pipe_in[PIPE_BUFFER_SIZE];
+static char     pipe_out[PIPE_BUFFER_SIZE];
+static uint32_t pipe_in_len;
+static uint32_t pipe_out_len;
+static bool     capture_output;
+static bool     output_truncated;
 
 static uint32_t cwd_inode = ROOT_INODE;
 static char     cwd_path[PATH_MAX] = "/";
@@ -51,6 +61,30 @@ static void print_error(const char *cmd, const char *arg, const char *msg) {
     }
     print(msg, COLOR_ERROR);
     sys_putchar('\n', COLOR_ERROR);
+}
+
+/* -- Command output: goes to the screen, or into pipe_out when the command feeds a pipe -- */
+
+static void out_puts(const char *s, uint32_t len, uint8_t color) {
+    if (!capture_output) {
+        sys_puts(s, len, color);
+        return;
+    }
+    for (uint32_t i = 0; i < len; i++) {
+        if (pipe_out_len >= PIPE_BUFFER_SIZE) {
+            output_truncated = true;
+            return;
+        }
+        pipe_out[pipe_out_len++] = s[i];
+    }
+}
+
+static void out_putchar(char c, uint8_t color) {
+    out_puts(&c, 1, color);
+}
+
+static void out_print(const char *s, uint8_t color) {
+    out_puts(s, str_len(s), color);
 }
 
 /* -- Directory helpers -- */
@@ -159,16 +193,19 @@ static bool split_path(const char *path, uint32_t *parent, const char **name, ui
 /* -- Commands -- */
 
 static void cmd_help(void) {
-    print("Commands:\n", COLOR_TEXT);
-    print("  cd [dir]        change directory\n", COLOR_TEXT);
-    print("  ls [dir]        list directory\n", COLOR_TEXT);
-    print("  mkdir <dir>     create directory\n", COLOR_TEXT);
-    print("  cat <file>      print file\n", COLOR_TEXT);
-    print("  cp <src> <dst>  copy file\n", COLOR_TEXT);
-    print("  rm <path>       remove file or empty directory\n", COLOR_TEXT);
-    print("  mv <src> <dst>  move or rename file\n", COLOR_TEXT);
-    print("  find <name>     search by name from /\n", COLOR_TEXT);
-    print("  clear           clear screen\n", COLOR_TEXT);
+    out_print("Commands:\n", COLOR_TEXT);
+    out_print("  cd [dir]        change directory\n", COLOR_TEXT);
+    out_print("  ls [dir]        list directory\n", COLOR_TEXT);
+    out_print("  mkdir <dir>     create directory\n", COLOR_TEXT);
+    out_print("  cat <file>      print file\n", COLOR_TEXT);
+    out_print("  cp <src> <dst>  copy file\n", COLOR_TEXT);
+    out_print("  rm <path>       remove file or empty directory\n", COLOR_TEXT);
+    out_print("  mv <src> <dst>  move or rename file\n", COLOR_TEXT);
+    out_print("  find <name>     search by name from /\n", COLOR_TEXT);
+    out_print("  grep <pat> [file]  print lines containing pat\n", COLOR_TEXT);
+    out_print("  clear           clear screen\n", COLOR_TEXT);
+    out_print("  a | b           pipe output of a into b\n", COLOR_TEXT);
+    out_print("                  e.g. ls | grep txt, cat f | grep \"a b\"\n", COLOR_TEXT);
 }
 
 // Apply path to cwd_path textually (inode resolution is already done by the caller)
@@ -245,10 +282,10 @@ static void cmd_ls(int argc, char **argv) {
         if (is_dot_entry(entry))
             continue;
         bool is_dir = entry->file_type == EXT2_FT_DIR;
-        sys_puts(entry_name(entry), entry->name_len, is_dir ? COLOR_DIR : COLOR_TEXT);
+        out_puts(entry_name(entry), entry->name_len, is_dir ? COLOR_DIR : COLOR_TEXT);
         if (is_dir)
-            sys_putchar('/', COLOR_DIR);
-        sys_putchar('\n', COLOR_TEXT);
+            out_putchar('/', COLOR_DIR);
+        out_putchar('\n', COLOR_TEXT);
     }
 }
 
@@ -327,17 +364,21 @@ static bool load_file(const char *cmd, const char *path, uint32_t *size) {
     return true;
 }
 
-static void cmd_cat(int argc, char **argv) {
+static void cmd_cat(int argc, char **argv, bool has_input) {
     if (argc < 2) {
-        print_error("cat", NULL, "missing operand");
+        if (!has_input) {
+            print_error("cat", NULL, "missing operand");
+            return;
+        }
+        out_puts(pipe_in, pipe_in_len, COLOR_TEXT); // cat with no file copies the pipe input
         return;
     }
     uint32_t size;
     if (!load_file("cat", argv[1], &size))
         return;
-    sys_puts((char*) file_buffer, size, COLOR_TEXT);
+    out_puts((char*) file_buffer, size, COLOR_TEXT);
     if (size > 0 && file_buffer[size - 1] != '\n')
-        sys_putchar('\n', COLOR_TEXT);
+        out_putchar('\n', COLOR_TEXT);
 }
 
 // Copy file src to dst (a new name, or an existing directory). Returns true on success
@@ -462,8 +503,8 @@ static void find_in(uint32_t dir, uint32_t path_len, const char *name, uint32_t 
 
         bool is_dir = entry->file_type == EXT2_FT_DIR;
         if (name_equal(entry_name(entry), entry->name_len, name, name_len)) {
-            sys_puts(find_path, child_len, is_dir ? COLOR_DIR : COLOR_TEXT);
-            sys_putchar('\n', COLOR_TEXT);
+            out_puts(find_path, child_len, is_dir ? COLOR_DIR : COLOR_TEXT);
+            out_putchar('\n', COLOR_TEXT);
             find_count++;
         }
 
@@ -484,6 +525,52 @@ static void cmd_find(int argc, char **argv) {
     find_in(ROOT_INODE, 0, argv[1], str_len(argv[1]), 0);
     if (find_count == 0)
         print_error("find", argv[1], "not found");
+}
+
+/* -- grep -- */
+
+static bool contains_pattern(const char *text, uint32_t len, const char *pat, uint32_t pat_len) {
+    if (pat_len == 0)
+        return true;
+    for (uint32_t i = 0; i + pat_len <= len; i++) {
+        if (memcmp(text + i, pat, pat_len) == 0)
+            return true;
+    }
+    return false;
+}
+
+// Print every line of text[0..size) that contains pat (plain substring match, no regex)
+static void grep_text(const char *text, uint32_t size, const char *pat, uint32_t pat_len) {
+    uint32_t start = 0;
+    while (start < size) {
+        uint32_t end = start;
+        while (end < size && text[end] != '\n')
+            end++;
+        if (contains_pattern(text + start, end - start, pat, pat_len)) {
+            out_puts(text + start, end - start, COLOR_TEXT);
+            out_putchar('\n', COLOR_TEXT);
+        }
+        start = end + 1;
+    }
+}
+
+static void cmd_grep(int argc, char **argv, bool has_input) {
+    if (argc < 2) {
+        print_error("grep", NULL, "usage: grep <pattern> [file]");
+        return;
+    }
+    const char *pat     = argv[1];
+    uint32_t    pat_len = str_len(pat);
+
+    if (argc >= 3) {
+        uint32_t size;
+        if (load_file("grep", argv[2], &size))
+            grep_text((char*) file_buffer, size, pat, pat_len);
+    } else if (has_input) {
+        grep_text(pipe_in, pipe_in_len, pat, pat_len);
+    } else {
+        print_error("grep", NULL, "missing file or pipe input");
+    }
 }
 
 /* -- Main loop -- */
@@ -515,24 +602,49 @@ static void read_line(void) {
     line[len] = '\0';
 }
 
-static int parse_args(char **argv) {
+// Split line at every '|' outside double quotes. Returns the stage count, -1 if there are too many
+static int split_pipeline(char **stages) {
+    int  count    = 0;
+    bool in_quote = false;
+    stages[count++] = line;
+    for (char *p = line; *p; p++) {
+        if (*p == '"') {
+            in_quote = !in_quote;
+        } else if (*p == '|' && !in_quote) {
+            if (count == PIPE_MAX)
+                return -1;
+            *p = '\0';
+            stages[count++] = p + 1;
+        }
+    }
+    return count;
+}
+
+// Split one stage into words. A word in "double quotes" may contain spaces
+static int parse_args(char *stage, char **argv) {
     int  argc = 0;
-    char *p   = line;
+    char *p   = stage;
     while (*p && argc < ARG_MAX) {
         while (*p == ' ')
             *p++ = '\0';
         if (!*p)
             break;
-        argv[argc++] = p;
-        while (*p && *p != ' ')
-            p++;
+        if (*p == '"') {
+            argv[argc++] = ++p;
+            while (*p && *p != '"')
+                p++;
+        } else {
+            argv[argc++] = p;
+            while (*p && *p != ' ')
+                p++;
+        }
+        if (*p)
+            *p++ = '\0';
     }
-    if (*p)
-        *p = '\0';
     return argc;
 }
 
-static void run_command(int argc, char **argv) {
+static void run_command(int argc, char **argv, bool has_input) {
     const char *cmd = argv[0];
     uint32_t    len = str_len(cmd);
     if (name_equal(cmd, len, "help", 4))
@@ -546,7 +658,7 @@ static void run_command(int argc, char **argv) {
     else if (name_equal(cmd, len, "mkdir", 5))
         cmd_mkdir(argc, argv);
     else if (name_equal(cmd, len, "cat", 3))
-        cmd_cat(argc, argv);
+        cmd_cat(argc, argv, has_input);
     else if (name_equal(cmd, len, "cp", 2))
         cmd_cp(argc, argv);
     else if (name_equal(cmd, len, "rm", 2))
@@ -555,8 +667,45 @@ static void run_command(int argc, char **argv) {
         cmd_mv(argc, argv);
     else if (name_equal(cmd, len, "find", 4))
         cmd_find(argc, argv);
+    else if (name_equal(cmd, len, "grep", 4))
+        cmd_grep(argc, argv, has_input);
     else
         print_error(cmd, NULL, "command not found, try help");
+}
+
+// Run one input line: stages separated by '|' run in order, each feeding its output to the next
+static void run_line(void) {
+    char *stages[PIPE_MAX];
+    int   count = split_pipeline(stages);
+    if (count < 0) {
+        print_error("shell", NULL, "too many pipes");
+        return;
+    }
+
+    pipe_in_len = 0;
+    for (int i = 0; i < count; i++) {
+        char *argv[ARG_MAX];
+        int   argc = parse_args(stages[i], argv);
+        if (argc == 0) {
+            if (count > 1)
+                print_error("shell", NULL, "syntax error near '|'");
+            return; // blank line: nothing to run
+        }
+
+        bool last        = (i == count - 1);
+        capture_output   = !last;
+        pipe_out_len     = 0;
+        output_truncated = false;
+        run_command(argc, argv, i > 0);
+        capture_output   = false;
+
+        if (output_truncated)
+            print_error(argv[0], NULL, "output too large for pipe, truncated");
+        if (!last) {
+            memcpy(pipe_in, pipe_out, pipe_out_len);
+            pipe_in_len = pipe_out_len;
+        }
+    }
 }
 
 int main(void) {
@@ -571,10 +720,7 @@ int main(void) {
         print("$ ", COLOR_TEXT);
 
         read_line();
-        char *argv[ARG_MAX];
-        int   argc = parse_args(argv);
-        if (argc > 0)
-            run_command(argc, argv);
+        run_line();
     }
     return 0;
 }
