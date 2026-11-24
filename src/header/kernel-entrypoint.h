@@ -12,4 +12,20 @@
  */
 extern void load_gdt(struct GDTR *gdtr);
 
+/**
+ * Set the TSS register pointing to GDT_TSS_SELECTOR at ring 0.
+ * Implemented in kernel-entrypoint.s. gdt_install_tss() must run first.
+ */
+extern void set_tss_register(void);
+
+/**
+ * Switch to a process page directory and jump into its user entrypoint.
+ * One way jump, implemented in kernel-entrypoint.s.
+ *
+ * @param virtual_addr         User entrypoint (flat binary linked at 0)
+ * @param page_dir_virtual_addr Kernel virtual address of the process page directory
+ * @note User stack pointer is set to PROCESS_STACK_TOP - 4, so that page must be mapped.
+ */
+extern void kernel_execute_user_program(void *virtual_addr, void *page_dir_virtual_addr);
+
 #endif
