@@ -64,7 +64,7 @@ Setelah boot, shell muncul dengan prompt `keOSbOS:/$`. Ketik `help` untuk daftar
 
 Kernel memformat disk otomatis kalau `bin/storage.bin` masih kosong. Isi disk tetap tersimpan antar boot. Untuk mulai dari disk kosong, hapus dulu `bin/storage.bin` lalu jalankan `make insert-shell` lagi.
 
-Kalau `shell` tidak ada di disk, kernel tidak masuk ke user mode dan hanya menjalankan loop echo keyboard.
+Kalau `shell` tidak ada di disk, kernel menampilkan pesan error lalu berhenti.
 
 ### Memasukkan File ke Disk
 
