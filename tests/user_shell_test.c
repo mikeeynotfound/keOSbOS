@@ -405,6 +405,14 @@ int main(void) {
     HAS("ls: command not found");
     HAS("hello.txt\n");
 
+    // export can add folders with $PATH and remove them by rewriting the list
+    run("export PATH=/bin\nexport PATH=$PATH:/apps\nexport\nexport PATH=/x:$PATH\nexport\nexport PATH=/bin\nexport\n");
+    HAS("PATH=/bin:/apps\n");
+    HAS("PATH=/x:/bin:/apps\n");
+    CHECK(strstr(after("PATH=/x:/bin:/apps\n"), "PATH=/bin\n") != NULL);
+    run("export PATH=$PATH:/\nhello.txt\n");     // /bin:/ again, the root file is found through PATH
+    HAS("hello.txt: /hello.txt: not a valid executable");
+
     printf("ALL OK (%d checks)\n", checks);
     printf("delete() status: rm file %s, rm empty dir %s\n",
            copy_gone ? "removes it" : "DOES NOT remove it",

@@ -193,6 +193,7 @@ static void cmd_help(void) {
     out_print("  ps              list running processes\n", COLOR_TEXT);
     out_print("  kill <pid>      terminate a process\n", COLOR_TEXT);
     out_print("  export [PATH=a:b]  show or set PATH (saved in /.path)\n", COLOR_TEXT);
+    out_print("                  add: export PATH=$PATH:/dir\n", COLOR_TEXT);
     out_print("  clear           clear screen\n", COLOR_TEXT);
     out_print("Programs in /bin (separate ELF executables, found through PATH):\n", COLOR_TEXT);
     out_print("  ls [dir]        list directory\n", COLOR_TEXT);
@@ -493,13 +494,29 @@ static void cmd_export(int argc, char **argv) {
         print_error("export", argv[1], "only PATH=<dir>[:<dir>...] is supported");
         return;
     }
+    // "$PATH" is replaced by the current value, so folders can be added:
+    // export PATH=$PATH:/apps   or   export PATH=/apps:$PATH
     const char *value = argv[1] + 5;
-    uint32_t    len   = str_len(value);
-    if (len >= PATH_VAR_MAX) {
-        print_error("export", NULL, "PATH too long");
-        return;
+    char        next[PATH_VAR_MAX];
+    uint32_t    len = 0;
+    while (*value) {
+        const char *part     = value;
+        uint32_t    part_len = 1;
+        if (memcmp(value, "$PATH", 5) == 0) {
+            part     = path_var;
+            part_len = path_var_len;
+            value   += 5;
+        } else {
+            value++;
+        }
+        if (len + part_len >= PATH_VAR_MAX) {
+            print_error("export", NULL, "PATH too long");
+            return;
+        }
+        memcpy(next + len, part, part_len);
+        len += part_len;
     }
-    memcpy(path_var, value, len);
+    memcpy(path_var, next, len);
     path_var[len] = '\0';
     path_var_len  = len;
     if (!path_save())

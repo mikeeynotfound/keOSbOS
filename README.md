@@ -195,6 +195,7 @@ Menggunakan EXT2 – IF2130 Edition di disk ATA 4 MiB.
 
 - Perintah yang bukan perintah bawaan shell dicari sebagai program di setiap folder `PATH` (dipisah `:`), berurutan. Contoh: dengan `PATH=/bin:/`, mengetik `clock` menjalankan `/bin/clock` kalau ada, kalau tidak `/clock`.
 - `export PATH=/bin:/` mengubah PATH dan langsung menyimpannya ke file `/.path`. Shell membaca file itu saat mulai, jadi PATH tetap sama setelah reboot. `export` tanpa argumen menampilkan PATH.
+- `$PATH` di dalam nilai diganti dengan PATH saat ini, jadi direktori bisa ditambah tanpa mengetik ulang: `export PATH=$PATH:/apps` (di belakang) atau `export PATH=/apps:$PATH` (di depan). Untuk mengurangi, tulis ulang daftarnya tanpa direktori itu, misalnya `export PATH=/bin`.
 - Nilai awal `PATH=/bin:/`, sehingga perintah di `/bin` serta `hello` dan `clock` di root bisa dijalankan tanpa `exec`.
 - Disk lama yang sudah punya `/.path` tetap memakai PATH yang tersimpan. Jalankan `export PATH=/bin:/` sekali supaya perintah di `/bin` ditemukan.
 - Perintah bawaan selalu didahulukan. Entry PATH yang kosong atau foldernya tidak ada dilewati.
@@ -233,7 +234,7 @@ Path bisa relatif atau absolut, dan bisa memakai `.` serta `..`.
 | `exec <file> [args]` | jalankan program user sebagai process baru di background |
 | `ps` | tampilkan PID, state, memori, dan nama process |
 | `kill <pid>` | hentikan process selain PID 0 |
-| `export [PATH=a:b]` | tampilkan atau ubah PATH, disimpan di `/.path` |
+| `export [PATH=a:b]` | tampilkan atau ubah PATH, disimpan di `/.path`. `$PATH` di nilai diganti PATH saat ini, misalnya `export PATH=$PATH:/apps` |
 | `<program> [args]` | jalankan program yang ditemukan di PATH dan tunggu sampai selesai |
 | `<program> [args] &` | jalankan program dari PATH di background |
 | `ESC` | hentikan program yang sedang berjalan di foreground |
