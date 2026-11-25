@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include "header/memory/paging.h"
 #include "header/stdlib/string.h"
+#include "header/memory/swap.h"
 
 /**
  * _paging_kernel_page_directory and _paging_kernel_page_table is initialized on kernel-entrypoint.s
@@ -36,6 +37,30 @@ static uint32_t paging_find_free_page_frame(void) {
     return PAGE_FRAME_MAX_COUNT;
 }
 
+/**
+ * Take one free physical frame and mark it used. When RAM is full, page
+ * replacement swaps a user page out first (Book 3.2.3).
+ */
+uint32_t paging_take_free_frame(void) {
+    uint32_t frame = paging_find_free_page_frame();
+    if (frame == PAGE_FRAME_MAX_COUNT && swap_evict_one())
+        frame = paging_find_free_page_frame();
+    if (frame == PAGE_FRAME_MAX_COUNT)
+        return PAGE_FRAME_MAX_COUNT;
+    page_manager_state.page_frame_map[frame] = true;
+    page_manager_state.free_page_frame_count--;
+    return frame;
+}
+
+// Give a frame back to the free pool (used when its page is swapped out)
+void paging_release_frame(uint32_t frame) {
+    if (frame >= KERNEL_RESERVED_PAGE_FRAME_COUNT && frame < PAGE_FRAME_MAX_COUNT
+        && page_manager_state.page_frame_map[frame]) {
+        page_manager_state.page_frame_map[frame] = false;
+        page_manager_state.free_page_frame_count++;
+    }
+}
+
 struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t page_directory_index) {
     //this helper function is given from kit but you can always modified it if you think theres a bug (spoiler alert) or you think theres a better approach
 
@@ -47,11 +72,9 @@ struct PageTable *paging_get_page_table(struct PageDirectory *page_dir, uint32_t
         return (struct PageTable *)(RECURSIVE_PAGE_TABLES_VIRTUAL_ADDRESS + page_directory_index * PAGE_FRAME_SIZE);
     }
 
-    uint32_t page_frame_number = paging_find_free_page_frame();
+    uint32_t page_frame_number = paging_take_free_frame();
     if (page_frame_number == PAGE_FRAME_MAX_COUNT) return NULL;
 
-    page_manager_state.page_frame_map[page_frame_number] = true;
-    page_manager_state.free_page_frame_count--;
     dir_entry->flag = (struct PageDirectoryEntryFlag) {
         .present_bit = true,
         .write_bit = true,
@@ -171,7 +194,8 @@ bool paging_allocate_check(uint32_t amount) {
     if (amount % PAGE_FRAME_SIZE != 0)
         required_frames++;
 
-    return required_frames <= page_manager_state.free_page_frame_count;
+    // Frames that are in use can be freed by swapping their page out
+    return required_frames <= page_manager_state.free_page_frame_count + swap_manager.free_count;
 }
 
 
@@ -188,15 +212,13 @@ bool paging_allocate_user_page_frame(struct PageDirectory *page_dir, void *virtu
 
     // Reserve the data frame first so a failed page-table allocation can be
     // rolled back without leaking a frame.
-    uint32_t frame = paging_find_free_page_frame();
+    uint32_t frame = paging_take_free_frame();
     if (frame == PAGE_FRAME_MAX_COUNT) return false;
-
-    page_manager_state.page_frame_map[frame] = true;
-    page_manager_state.free_page_frame_count--;
 
     // Get page table (will be created if not exist yet)
     struct PageTable *page_table = paging_get_page_table(page_dir, page_directory_index);
-    if (page_table == NULL || page_table->table[page_table_index].flag.present_bit) {
+    if (page_table == NULL || page_table->table[page_table_index].flag.present_bit
+        || (page_table->table[page_table_index].ignored & PTE_SWAPPED_BIT)) {
         // Allocation failed or the virtual address is already mapped.
         page_manager_state.page_frame_map[frame] = false;
         page_manager_state.free_page_frame_count++;
@@ -228,7 +250,16 @@ bool paging_free_user_page_frame(struct PageDirectory *page_dir, void *virtual_a
     if (!page_dir->table[page_directory_index].flag.present_bit) return false;
 
     struct PageTable *page_table = paging_get_page_table(page_dir, page_directory_index);
-    if (page_table == NULL || !page_table->table[page_table_index].flag.present_bit) return false;
+    if (page_table == NULL) return false;
+
+    // Page currently on swap: only its swap slot has to be released
+    struct PageTableEntry *entry = &page_table->table[page_table_index];
+    if (!entry->flag.present_bit && (entry->ignored & PTE_SWAPPED_BIT)) {
+        swap_free_slot(entry->physical_page_base_address);
+        memset(entry, 0, sizeof(struct PageTableEntry));
+        return true;
+    }
+    if (!entry->flag.present_bit) return false;
 
     uint32_t frame = page_table->table[page_table_index].physical_page_base_address;
 

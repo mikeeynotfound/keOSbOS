@@ -1,3 +1,4 @@
+#include "header/memory/swap.h"
 #include "header/cpu/interrupt.h"
 #include "header/cpu/gdt.h"
 #include "header/cpu/portio.h"
@@ -82,6 +83,9 @@ static bool is_from_user_mode(struct InterruptFrame *frame) {
 }
 
 void main_interrupt_handler(struct InterruptFrame frame) {
+    // Page fault on a page that is on swap: bring it back and retry the instruction
+    if (frame.int_number == 0xE && handle_page_fault(frame.int_stack.error_code))
+        return;
     switch (frame.int_number) {
         case PIC1_OFFSET + IRQ_TIMER:
             pic_ack(IRQ_TIMER);
