@@ -413,6 +413,34 @@ int main(void) {
     run("export PATH=$PATH:/\nhello.txt\n");     // /bin:/ again, the root file is found through PATH
     HAS("hello.txt: /hello.txt: not a valid executable");
 
+    // Recursive folder support: cp -r / rm -r (book bonus 3.4.2.2)
+    run("export PATH=/bin:/\nmkdir tree\nmkdir tree/sub\nmkdir tree/sub/deep\n"
+        "cp hello.txt tree/a.txt\ncp big.bin tree/sub/b.bin\n");
+    {
+        struct EXT2Inode rootnode;
+        CHECK(load_parent_directory(ROOT_INODE, &rootnode));
+        uint32_t tree = find_entry(&rootnode, "tree", 4, EXT2_FT_DIR);
+        CHECK(tree != 0);
+        put_file(tree, "empty.txt", "", 0); // empty regular file, not a directory
+    }
+    run("cp -r tree tree_copy\nls tree_copy\nls tree_copy/sub\nls tree_copy/sub/deep\n"
+        "cat tree_copy/a.txt\n");
+    HAS("sub/\n");
+    HAS("a.txt\n");
+    HAS("empty.txt\n");
+    LACKS("empty.txt/\n"); // empty regular file, not a directory
+    HAS("deep/\n");
+    HAS("b.bin\n");
+    CHECK(strstr(after("cat tree_copy/a.txt\n"), "hello world\n") == after("cat tree_copy/a.txt\n"));
+
+    run("cp -r tree tree/sub/bad\n"); // cannot copy a directory into itself
+    HAS("cp: tree/sub/bad: cannot copy a directory into itself");
+
+    run("rm -r /\nrm -r .\nrm -r tree_copy\nfind tree_copy\n");
+    HAS("rm: /: cannot remove root or current directory");
+    HAS("rm: .: cannot remove root or current directory");
+    HAS("find: tree_copy: not found");
+
     printf("ALL OK (%d checks)\n", checks);
     printf("delete() status: rm file %s, rm empty dir %s\n",
            copy_gone ? "removes it" : "DOES NOT remove it",
