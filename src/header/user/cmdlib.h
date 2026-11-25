@@ -29,6 +29,12 @@ extern char    stdin_buffer[PIPE_BUFFER_SIZE];
 uint32_t str_len(const char *s);
 bool     name_equal(const char *a, uint32_t a_len, const char *b, uint32_t b_len);
 
+/* -- Regex (small POSIX-like subset used by grep) -- */
+// Validate a pattern. Supports literals, '.', '^', '$', '*', '+', '?', '[]', '\\' and '|'
+bool regex_valid(const char *pattern, uint32_t pattern_len);
+// Match anywhere in text[0..len). '^' anchors to the start, '$' to the end of the text
+bool regex_match(const char *text, uint32_t len, const char *pattern, uint32_t pattern_len);
+
 /* -- Output -- */
 // Standard output (screen, or the pipe when this command is not the last stage)
 void out_puts(const char *s, uint32_t len, uint8_t color);

@@ -18,6 +18,273 @@ bool name_equal(const char *a, uint32_t a_len, const char *b, uint32_t b_len) {
     return a_len == b_len && memcmp(a, b, a_len) == 0;
 }
 
+/* -- Regex (small POSIX-like subset used by grep) -- */
+
+#define REGEX_STEP_LIMIT 200000u
+
+static uint32_t regex_steps;
+
+static void regex_bit_set(uint8_t *bits, uint8_t c) {
+    bits[c >> 3] |= (uint8_t) (1u << (c & 7));
+}
+
+static bool regex_bit_get(const uint8_t *bits, uint8_t c) {
+    return (bits[c >> 3] & (1u << (c & 7))) != 0;
+}
+
+// End of this alternative: next unescaped '|' outside a class, or len
+static uint32_t regex_branch_end(const char *pat, uint32_t len, uint32_t start) {
+    bool in_class = false;
+    for (uint32_t i = start; i < len; i++) {
+        char c = pat[i];
+        if (c == '\\') {
+            i++;
+            continue;
+        }
+        if (in_class) {
+            if (c == ']')
+                in_class = false;
+        } else if (c == '[') {
+            in_class = true;
+        } else if (c == '|') {
+            return i;
+        }
+    }
+    return len;
+}
+
+bool regex_valid(const char *pat, uint32_t len) {
+    uint32_t start = 0;
+    while (start <= len) {
+        uint32_t end = regex_branch_end(pat, len, start);
+        bool have_atom = false;
+
+        for (uint32_t i = start; i < end;) {
+            char c = pat[i];
+            if (c == '\\') {
+                if (i + 1 >= end)
+                    return false;
+                i += 2;
+                have_atom = true;
+                continue;
+            }
+            if (c == '[') {
+                uint32_t j = i + 1;
+                if (j < end && pat[j] == '^')
+                    j++;
+                bool closed = false;
+                while (j < end) {
+                    if (pat[j] == '\\') {
+                        if (j + 1 >= end)
+                            return false;
+                        j += 2;
+                        continue;
+                    }
+                    if (pat[j] == ']') {
+                        closed = true;
+                        j++;
+                        break;
+                    }
+                    j++;
+                }
+                if (!closed)
+                    return false;
+                i = j;
+                have_atom = true;
+                continue;
+            }
+            if (c == '*' || c == '+' || c == '?') {
+                if (!have_atom)
+                    return false;
+                have_atom = false; // a second quantifier is invalid
+                i++;
+                continue;
+            }
+            // Anchors are not atoms and cannot be quantified
+            if ((c == '^' && i == start) || (c == '$' && i + 1 == end))
+                have_atom = false;
+            else
+                have_atom = true;
+            i++;
+        }
+
+        if (end == len)
+            break;
+        start = end + 1;
+    }
+    return true;
+}
+
+struct RegexAtom {
+    uint8_t  kind; // 1 = char, 2 = any, 3 = class
+    char     ch;
+    bool     negate;
+    uint8_t  bits[32];
+    uint32_t len;
+};
+
+static bool regex_parse_atom(const char *pat, uint32_t i, uint32_t end, struct RegexAtom *a) {
+    memset(a, 0, sizeof(*a));
+    char c = pat[i];
+
+    if (c == '\\') {
+        if (i + 1 >= end)
+            return false;
+        a->kind = 1;
+        a->ch = pat[i + 1];
+        a->len = 2;
+        return true;
+    }
+    if (c == '.') {
+        a->kind = 2;
+        a->len = 1;
+        return true;
+    }
+    if (c == '[') {
+        uint32_t j = i + 1;
+        a->kind = 3;
+        if (j < end && pat[j] == '^') {
+            a->negate = true;
+            j++;
+        }
+        bool any = false;
+        while (j < end && pat[j] != ']') {
+            char lo;
+            if (pat[j] == '\\') {
+                if (j + 1 >= end)
+                    return false;
+                lo = pat[j + 1];
+                j += 2;
+            } else {
+                lo = pat[j++];
+            }
+            if (j + 1 < end && pat[j] == '-' && pat[j + 1] != ']') {
+                char hi;
+                j++;
+                if (pat[j] == '\\') {
+                    if (j + 1 >= end)
+                        return false;
+                    hi = pat[j + 1];
+                    j += 2;
+                } else {
+                    hi = pat[j++];
+                }
+                for (uint16_t v = (uint8_t) lo; v <= (uint8_t) hi; v++)
+                    regex_bit_set(a->bits, (uint8_t) v);
+            } else {
+                regex_bit_set(a->bits, (uint8_t) lo);
+            }
+            any = true;
+        }
+        if (j >= end || !any)
+            return false;
+        a->len = j - i + 1;
+        return true;
+    }
+    if (c == '*' || c == '+' || c == '?')
+        return false;
+
+    a->kind = 1;
+    a->ch = c;
+    a->len = 1;
+    return true;
+}
+
+static bool regex_atom_matches(const struct RegexAtom *a, char c) {
+    if (a->kind == 2)
+        return true; // lines never contain '\n'
+    if (a->kind == 1)
+        return c == a->ch;
+    bool in = regex_bit_get(a->bits, (uint8_t) c);
+    return a->negate ? !in : in;
+}
+
+static bool regex_match_seq(const char *text, uint32_t len, uint32_t pos,
+                            const char *pat, uint32_t i, uint32_t end);
+
+static bool regex_match_branch(const char *text, uint32_t len, uint32_t pos,
+                               const char *pat, uint32_t start, uint32_t end) {
+    if (++regex_steps > REGEX_STEP_LIMIT)
+        return false;
+    if (start < end && pat[start] == '^') {
+        if (pos != 0)
+            return false;
+        start++;
+    }
+    return regex_match_seq(text, len, pos, pat, start, end);
+}
+
+static bool regex_match_seq(const char *text, uint32_t len, uint32_t pos,
+                            const char *pat, uint32_t i, uint32_t end) {
+    if (++regex_steps > REGEX_STEP_LIMIT)
+        return false;
+    if (i >= end)
+        return true;
+    if (pat[i] == '$' && i + 1 == end)
+        return pos == len;
+
+    struct RegexAtom a;
+    if (!regex_parse_atom(pat, i, end, &a))
+        return false;
+
+    uint32_t ni = i + a.len;
+    char q = 0;
+    if (ni < end && (pat[ni] == '*' || pat[ni] == '+' || pat[ni] == '?'))
+        q = pat[ni];
+
+    if (q == 0) {
+        if (pos >= len || !regex_atom_matches(&a, text[pos]))
+            return false;
+        return regex_match_seq(text, len, pos + 1, pat, ni, end);
+    }
+
+    uint32_t min = (q == '+') ? 1 : 0;
+    uint32_t max = (q == '?') ? 1 : len - pos;
+    uint32_t count = 0;
+    while (count < max && pos + count < len && regex_atom_matches(&a, text[pos + count])) {
+        count++;
+        if (++regex_steps > REGEX_STEP_LIMIT)
+            return false;
+    }
+    if (count < min)
+        return false;
+
+    for (uint32_t k = count; ; k--) {
+        if (regex_match_seq(text, len, pos + k, pat, ni + 1, end))
+            return true;
+        if (k == min)
+            break;
+    }
+    return false;
+}
+
+bool regex_match(const char *text, uint32_t len, const char *pat, uint32_t pat_len) {
+    if (!regex_valid(pat, pat_len))
+        return false;
+    regex_steps = 0;
+
+    uint32_t start = 0;
+    while (start <= pat_len) {
+        uint32_t end = regex_branch_end(pat, pat_len, start);
+        bool anchored = (start < end && pat[start] == '^');
+
+        if (anchored) {
+            if (regex_match_branch(text, len, 0, pat, start, end))
+                return true;
+        } else {
+            for (uint32_t pos = 0; pos <= len; pos++) {
+                if (regex_match_branch(text, len, pos, pat, start, end))
+                    return true;
+            }
+        }
+
+        if (end == pat_len)
+            break;
+        start = end + 1;
+    }
+    return false;
+}
+
 /* -- Output -- */
 
 void out_puts(const char *s, uint32_t len, uint8_t color) {
