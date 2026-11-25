@@ -206,6 +206,8 @@ static void cmd_help(void) {
     out_print("  exec <file>     run program as a new process\n", COLOR_TEXT);
     out_print("  ps              list running processes\n", COLOR_TEXT);
     out_print("  kill <pid>      terminate a process\n", COLOR_TEXT);
+    out_print("  export [PATH=a:b]  show or set PATH (saved in /.path)\n", COLOR_TEXT);
+    out_print("  <program>       run a program found in PATH\n", COLOR_TEXT);
     out_print("  clear           clear screen\n", COLOR_TEXT);
     out_print("  a | b           pipe output of a into b\n", COLOR_TEXT);
     out_print("                  e.g. ls | grep txt, cat f | grep \"a b\"\n", COLOR_TEXT);
@@ -702,6 +704,110 @@ static void cmd_kill(int argc, char **argv) {
         print_error("kill", argv[1], "failed");
 }
 
+/* -- PATH (bonus): search programs without exec, saved in /.path -- */
+
+#define PATH_FILE_NAME     ".path"   // in root, so it survives a reboot
+#define PATH_FILE_NAME_LEN 5
+#define PATH_VAR_MAX       128
+
+static char     path_var[PATH_VAR_MAX] = "/";   // default: programs in root
+static uint32_t path_var_len = 1;
+
+// Read /.path once at shell start. Keep the default if it does not exist yet.
+static void path_load(void) {
+    struct EXT2DriverRequest req = {
+        .buf          = file_buffer,
+        .name         = PATH_FILE_NAME,
+        .name_len     = PATH_FILE_NAME_LEN,
+        .parent_inode = ROOT_INODE,
+        .buffer_size  = FILE_BUFFER_SIZE,
+        .is_directory = false,
+    };
+    memset(file_buffer, 0, PATH_VAR_MAX);
+    if (sys_read(&req) != 0)
+        return;
+    uint32_t len = 0;
+    while (len < PATH_VAR_MAX - 1 && file_buffer[len] != '\n' && file_buffer[len] != '\0')
+        len++;
+    memcpy(path_var, file_buffer, len);
+    path_var[len] = '\0';
+    path_var_len  = len;
+}
+
+// Write PATH to /.path. write() fails if the file exists, so delete it first.
+static bool path_save(void) {
+    char buf[PATH_VAR_MAX + 1];
+    memcpy(buf, path_var, path_var_len);
+    buf[path_var_len] = '\n';   // at least 1 byte: size 0 would create a folder
+    struct EXT2DriverRequest req = {
+        .buf          = buf,
+        .name         = PATH_FILE_NAME,
+        .name_len     = PATH_FILE_NAME_LEN,
+        .parent_inode = ROOT_INODE,
+        .buffer_size  = path_var_len + 1,
+        .is_directory = false,
+    };
+    sys_delete(&req);
+    return sys_write(&req) == 0;
+}
+
+static void cmd_export(int argc, char **argv) {
+    if (argc < 2) {
+        out_print("PATH=", COLOR_TEXT);
+        out_puts(path_var, path_var_len, COLOR_TEXT);
+        out_putchar('\n', COLOR_TEXT);
+        return;
+    }
+    if (memcmp(argv[1], "PATH=", 5) != 0) {
+        print_error("export", argv[1], "only PATH=<dir>[:<dir>...] is supported");
+        return;
+    }
+    const char *value = argv[1] + 5;
+    uint32_t    len   = str_len(value);
+    if (len >= PATH_VAR_MAX) {
+        print_error("export", NULL, "PATH too long");
+        return;
+    }
+    memcpy(path_var, value, len);
+    path_var[len] = '\0';
+    path_var_len  = len;
+    if (!path_save())
+        print_error("export", NULL, "failed to save /.path");
+}
+
+/**
+ * Look for program cmd in every PATH entry (separated by ':'), first match wins.
+ * On success full_path holds "<dir>/<cmd>", ready for exec_program().
+ */
+static bool find_in_path(const char *cmd, uint32_t cmd_len, char *full_path) {
+    uint32_t i = 0;
+    while (i < path_var_len) {
+        uint32_t start = i;
+        while (i < path_var_len && path_var[i] != ':')
+            i++;
+        uint32_t dir_len = i - start;
+        i++;                                    // skip ':'
+        if (dir_len == 0)
+            continue;                           // empty entry is ignored, not cwd
+
+        uint32_t dir  = resolve_dir(path_var + start, dir_len);
+        uint8_t  type = 0;
+        if (dir == 0 || lookup(dir, cmd, cmd_len, &type) == 0 || type != EXT2_FT_REG_FILE)
+            continue;
+        if (dir_len + 1 + cmd_len >= PATH_MAX)
+            continue;
+
+        uint32_t n = dir_len;
+        memcpy(full_path, path_var + start, dir_len);
+        if (full_path[n - 1] != '/')
+            full_path[n++] = '/';
+        memcpy(full_path + n, cmd, cmd_len);
+        full_path[n + cmd_len] = '\0';
+        return true;
+    }
+    return false;
+}
+
 /* -- Main loop -- */
 
 static void read_line(void) {
@@ -806,8 +912,16 @@ static void run_command(int argc, char **argv, bool has_input) {
         cmd_ps();
     else if (name_equal(cmd, len, "kill", 4))
         cmd_kill(argc, argv);
-    else
-        print_error(cmd, NULL, "command not found, try help");
+    else if (name_equal(cmd, len, "export", 6))
+        cmd_export(argc, argv);
+    else {
+        // Not a built-in: run it as a program from PATH
+        char full_path[PATH_MAX];
+        if (find_in_path(cmd, len, full_path))
+            exec_program(cmd, full_path);
+        else
+            print_error(cmd, NULL, "command not found, try help");
+    }
 }
 
 // Run one input line: stages separated by '|' run in order, each feeding its output to the next
@@ -848,6 +962,7 @@ static void run_line(void) {
 int main(void) {
     sys_keyboard_on();
     sys_clear_screen();
+    path_load();
     print("keOSbOS shell, type help for commands\n", COLOR_TEXT);
 
     while (true) {

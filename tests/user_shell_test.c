@@ -238,6 +238,28 @@ int main(void) {
     run("ls\nclear\n");
     CHECK(strncmp(out, "keOSbOS:/$ ", 11) == 0);
 
+    // PATH (bonus): default "/", lookup order, export, saved in /.path.
+    // The host sys_exec always fails with 4, so the error shows the resolved path.
+    put_file(1, "prog", "\x90", 1);
+    run("export\nprog\n");
+    HAS("PATH=/\n");
+    HAS("prog: /prog: no such file");
+    run("mkdir bin\nexport PATH=/bin\nprog\n");
+    HAS("prog: command not found");
+    run("cp /prog /bin\nprog\nexport PATH=nope::/bin/\nprog\nexport FOO=1\n");
+    HAS("prog: /bin/prog: no such file");
+    LACKS("prog: command not found");
+    HAS("export: FOO=1: only PATH=");
+    {
+        char saved[32] = {0};
+        struct EXT2DriverRequest r = { .buf = saved, .name = ".path", .name_len = 5,
+                                       .parent_inode = 1, .buffer_size = sizeof saved };
+        CHECK(ext2_read(r) == 0);
+        CHECK(strcmp(saved, "nope::/bin/\n") == 0);
+    }
+    run("export\n");                   // a new shell run reloads PATH from /.path
+    HAS("PATH=nope::/bin/\n");
+
     printf("ALL OK (%d checks)\n", checks);
     printf("delete() status: rm file %s, rm empty dir %s\n",
            copy_gone ? "removes it" : "DOES NOT remove it",

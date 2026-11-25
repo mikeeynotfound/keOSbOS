@@ -175,6 +175,13 @@ Menggunakan EXT2 – IF2130 Edition di disk ATA 4 MiB.
 - **Multitasking:** `exec`, `ps`, `kill`, `exit`, dan `yield` tersedia lewat syscall. Process dapat menunggu keyboard atau waktu dengan `yield` supaya tidak memonopoli CPU.
 - **Program eksternal:** `hello` adalah flat binary terpisah yang dijalankan lewat `exec hello`, bukan hardcode di shell. `clock` menampilkan waktu WIB di sudut kanan bawah.
 
+### Bonus: PATH Persistent
+
+- Perintah yang bukan perintah bawaan shell dicari sebagai program di setiap folder `PATH` (dipisah `:`), berurutan. Contoh: dengan `PATH=/bin:/`, mengetik `clock` menjalankan `/bin/clock` kalau ada, kalau tidak `/clock`.
+- `export PATH=/bin:/` mengubah PATH dan langsung menyimpannya ke file `/.path`. Shell membaca file itu saat mulai, jadi PATH tetap sama setelah reboot. `export` tanpa argumen menampilkan PATH.
+- Nilai awal `PATH=/`, sehingga `hello` dan `clock` bisa dijalankan tanpa `exec`.
+- Perintah bawaan selalu didahulukan. Entry PATH yang kosong atau foldernya tidak ada dilewati.
+
 ### Perintah Shell
 
 Path bisa relatif atau absolut, dan bisa memakai `.` serta `..`.
@@ -195,6 +202,8 @@ Path bisa relatif atau absolut, dan bisa memakai `.` serta `..`.
 | `exec <file>` | jalankan program user sebagai process baru |
 | `ps` | tampilkan PID, state, memori, dan nama process |
 | `kill <pid>` | hentikan process selain PID 0 |
+| `export [PATH=a:b]` | tampilkan atau ubah PATH, disimpan di `/.path` |
+| `<program>` | jalankan program yang ditemukan di PATH, sama seperti `exec` |
 | `a \| b` | output `a` jadi input `b`, maksimal 8 tahap |
 
 Argumen yang berisi spasi ditulis di dalam tanda kutip, misalnya `cat notes.txt | grep "apel merah"`.
