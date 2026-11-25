@@ -56,13 +56,25 @@ uint32_t lookup(uint32_t dir, const char *name, uint32_t name_len, uint8_t *type
 uint32_t resolve_dir(const char *path, uint32_t len);
 // Split path into its parent directory inode and last component. False if the parent does not exist
 bool split_path(const char *path, uint32_t *parent, const char **name, uint32_t *name_len);
+// Read the file named `name` inside directory `parent` into file_buffer and set *size.
+// Prints an error and returns false on failure.
+bool load_file_from_dir(const char *cmd, uint32_t parent, const char *name, uint32_t name_len, uint32_t *size);
 // Read the file at path into file_buffer and set *size. Prints an error and returns false on failure
 bool load_file(const char *cmd, const char *path, uint32_t *size);
 
 /* -- File operations shared by cp, mv and rm -- */
 // Copy file src to dst (a new name, or an existing directory). Prints errors, returns true on success
 bool copy_file(const char *cmd, const char *src, const char *dst);
+// Copy a file already located in `src_parent` under `src_name` into `dst_parent` under `dst_name`
+bool copy_file_from_dir(const char *cmd, uint32_t src_parent, const char *src_name, uint32_t src_name_len,
+                        uint32_t dst_parent, const char *dst_name, uint32_t dst_name_len);
+// Create an empty directory named `name` inside directory `parent`
+bool create_directory(const char *cmd, uint32_t parent, const char *name, uint32_t name_len);
+// Recursive copy: `cp -r src dst`. Folder support is a book bonus (3.4.2.2).
+bool copy_tree(const char *cmd, const char *src, const char *dst);
 // Delete a file, or an empty directory. Returns the delete() return code (0: success)
 int8_t remove_path(const char *path, bool is_directory);
+// Recursive delete: `rm -r path`. Folder support is a book bonus (3.4.2.2).
+bool remove_tree(const char *cmd, const char *path);
 
 #endif
