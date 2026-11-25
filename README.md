@@ -230,7 +230,7 @@ Path bisa relatif atau absolut, dan bisa memakai `.` serta `..`.
 | `rm <path>` | hapus file atau folder kosong (program `/bin/rm`) |
 | `mv <src> <dst>` | pindah atau ganti nama file (program `/bin/mv`) |
 | `find <name>` | cari file atau folder dengan nama persis, mulai dari `/` (program `/bin/find`) |
-| `grep <pola> [file]` | tampilkan baris yang mengandung pola (program `/bin/grep`) |
+| `grep <regex> [file]` | tampilkan baris yang cocok dengan regex (program `/bin/grep`) |
 | `exec <file> [args]` | jalankan program user sebagai process baru di background |
 | `ps` | tampilkan PID, state, memori, dan nama process |
 | `kill <pid>` | hentikan process selain PID 0 |
@@ -241,6 +241,8 @@ Path bisa relatif atau absolut, dan bisa memakai `.` serta `..`.
 | `a \| b` | output `a` jadi input `b`, maksimal 8 tahap |
 
 Argumen yang berisi spasi ditulis di dalam tanda kutip, misalnya `cat notes.txt | grep "apel merah"`.
+
+`grep` memakai subset regex: literal, `.`, `^`, `$`, `*`, `+`, `?`, `[abc]`, `[a-z]`, `[^...]`, escape dengan `\`, dan alternation `|`. Contoh: `grep "^a[ab]b$" data.txt` hanya mencocokkan seluruh baris `aab` atau `ab`.
 
 Batasan saat ini:
 

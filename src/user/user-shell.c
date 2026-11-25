@@ -203,11 +203,11 @@ static void cmd_help(void) {
     out_print("  rm <path>       remove file or empty directory\n", COLOR_TEXT);
     out_print("  mv <src> <dst>  move or rename file\n", COLOR_TEXT);
     out_print("  find <name>     search by name from /\n", COLOR_TEXT);
-    out_print("  grep <pat> [file]  print lines containing pat\n", COLOR_TEXT);
+    out_print("  grep <regex> [file]  print lines matching regex\n", COLOR_TEXT);
     out_print("  <program> [args] [&]  run a program from PATH, & = background\n", COLOR_TEXT);
     out_print("  ESC             stop the program running in the foreground\n", COLOR_TEXT);
     out_print("  a | b           pipe output of a into b\n", COLOR_TEXT);
-    out_print("                  e.g. ls | grep txt, cat f | grep \"a b\"\n", COLOR_TEXT);
+    out_print("                  e.g. ls | grep txt, cat f | grep \"^a[ab]b$\"\n", COLOR_TEXT);
 }
 
 // Apply path to cwd_path textually (inode resolution is already done by the caller)

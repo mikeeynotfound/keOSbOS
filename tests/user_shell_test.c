@@ -359,6 +359,54 @@ int main(void) {
     CHECK(strcmp(last_argv[1], "lo wo") == 0);
     CHECK(strcmp(last_argv[2], "hello.txt") == 0);
 
+    // Regex grep (bonus): literal, '.', '^', '$', quantifiers, class, escape and '|'
+    {
+        const char *rx = "alpha\nbeta\nalpha beta\naab\nab\nb\na.b\ncat dog\n";
+        put_file(1, "regex.txt", rx, strlen(rx));
+    }
+    {
+        const char *m, *e;
+
+        m = "grep alpha regex.txt\n";  e = "alpha\nalpha beta\n";
+        run(m); CHECK(strncmp(after(m), e, strlen(e)) == 0);
+
+        m = "grep \"a.b\" regex.txt\n"; e = "alpha beta\naab\na.b\n";
+        run(m); CHECK(strncmp(after(m), e, strlen(e)) == 0);
+
+        m = "grep \"^beta$\" regex.txt\n"; e = "beta\n";
+        run(m); CHECK(strncmp(after(m), e, strlen(e)) == 0);
+
+        m = "grep \"beta$\" regex.txt\n"; e = "beta\nalpha beta\n";
+        run(m); CHECK(strncmp(after(m), e, strlen(e)) == 0);
+
+        m = "grep \"^a*b$\" regex.txt\n"; e = "aab\nab\nb\n";
+        run(m); CHECK(strncmp(after(m), e, strlen(e)) == 0);
+
+        m = "grep \"^a+b$\" regex.txt\n"; e = "aab\nab\n";
+        run(m); CHECK(strncmp(after(m), e, strlen(e)) == 0);
+
+        m = "grep \"^ab?$\" regex.txt\n"; e = "ab\n";
+        run(m); CHECK(strncmp(after(m), e, strlen(e)) == 0);
+
+        m = "grep \"^a[ab]b$\" regex.txt\n"; e = "aab\n";
+        run(m); CHECK(strncmp(after(m), e, strlen(e)) == 0);
+
+        m = "grep \"^[^a]\" regex.txt\n"; e = "beta\nb\ncat dog\n";
+        run(m); CHECK(strncmp(after(m), e, strlen(e)) == 0);
+
+        m = "grep \"^beta$|^b$\" regex.txt\n"; e = "beta\nb\n";
+        run(m); CHECK(strncmp(after(m), e, strlen(e)) == 0);
+
+        m = "grep \"a\\.b\" regex.txt\n"; e = "a.b\n";
+        run(m); CHECK(strncmp(after(m), e, strlen(e)) == 0);
+
+        run("grep \"[\" regex.txt\n");
+        HAS("grep: [: invalid regex");
+
+        run("cat regex.txt | grep \"^cat\"\n");
+        HAS("cat dog\n");
+    }
+
     run("cd docs\nls\ncat hello.txt\n");               // relative paths use the shell's cwd
     HAS("a/\n");
     CHECK(strstr(after("cat hello.txt\n"), "hello world\n") == after("cat hello.txt\n"));
