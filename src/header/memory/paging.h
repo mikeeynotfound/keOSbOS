@@ -198,6 +198,16 @@ void paging_use_page_directory(struct PageDirectory *page_dir_virtual_addr);
 bool paging_allocate_check(uint32_t amount);
 
 /**
+ * Take one free physical frame (marked used). Swaps a user page out when RAM is full.
+ *
+ * @return Frame number, PAGE_FRAME_MAX_COUNT if none can be freed
+ */
+uint32_t paging_take_free_frame(void);
+
+// Give a frame back to the free pool (used when its page is swapped out)
+void paging_release_frame(uint32_t frame);
+
+/**
  * Allocate single user page frame in page directory
  * 
  * @param page_dir     Page directory to update
