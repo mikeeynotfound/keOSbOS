@@ -9,6 +9,7 @@
 #include "header/memory/paging.h"
 #include "header/filesystem/ext2.h"
 #include "header/process/process-info.h"
+#include "header/process/exec-request.h"
 
 #define CPU_EFLAGS_BASE_FLAG               0x2
 #define CPU_EFLAGS_FLAG_CARRY              0x1
@@ -44,12 +45,7 @@
 #define PROCESS_PAGE_FRAME_COUNT_MAX \
     ((PROCESS_BINARY_MAX_SIZE + PROCESS_HEAP_SLACK + PROCESS_STACK_SIZE) / PAGE_FRAME_SIZE)
 
-// Return code constant for process_create_user_process()
-#define PROCESS_CREATE_SUCCESS                   0
-#define PROCESS_CREATE_FAIL_MAX_PROCESS_EXCEEDED 1
-#define PROCESS_CREATE_FAIL_INVALID_ENTRYPOINT   2
-#define PROCESS_CREATE_FAIL_NOT_ENOUGH_MEMORY    3
-#define PROCESS_CREATE_FAIL_FS_READ_FAILURE      4
+// Return codes of process_create_user_process() (PROCESS_CREATE_*) are in header/process/exec-request.h
 
 /**
  * Contain information needed for a task to be able to get interrupted and resumed later
@@ -81,6 +77,7 @@ struct ProcessControlBlock {
         uint32_t pid;
         char     name[PROCESS_NAME_LENGTH_MAX];
         uint32_t state;
+        uint32_t cwd_inode;   // working directory given by the parent (SYSCALL_GET_CWD)
     } metadata;
 
     struct Context context;
@@ -119,6 +116,23 @@ struct ProcessControlBlock* process_get_current_running_pcb_pointer(void);
  * @return        Process creation return code
  */
 int32_t process_create_user_process(struct EXT2DriverRequest request);
+
+/**
+ * Create new user process with arguments (bonus: separate shell commands).
+ * The executable can be a flat binary or an ELF32 executable. argc / argv are
+ * placed on the new user stack as described in the book:
+ *   ESP -> argc, ESP+4 -> argv[0], ..., ESP+4*(argc+1) -> NULL
+ *
+ * @note          argv must still be readable, call this from the caller's address space
+ * @param request Read request of the executable, request.buf is the entrypoint for flat binaries
+ * @param argc    Number of arguments (at most EXEC_ARGC_MAX), 0 means argv[0] = file name
+ * @param argv    Argument strings
+ * @param cwd_inode Working directory of the new process
+ * @param pid_out PID of the new process when creation succeeds, can be NULL
+ * @return        Process creation return code
+ */
+int32_t process_create_user_process_with_args(struct EXT2DriverRequest request, uint32_t argc,
+                                              char *const *argv, uint32_t cwd_inode, uint32_t *pid_out);
 
 /**
  * Destroy process then release page directory and process control block

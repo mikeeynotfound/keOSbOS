@@ -23,6 +23,14 @@
  * SYSCALL_PUTCHAR_AT      ebx: char, ecx: color, edx: (row << 8) | col
  * SYSCALL_YIELD            no argument, voluntarily give up CPU
  * SYSCALL_GET_PID          ebx: uint32_t* output
+ *
+ * Bonus: separate shell commands (ELF), see header/process/exec-request.h
+ * SYSCALL_EXEC_ARGS        ebx: struct ExecRequest*, ecx: int32_t* retcode, edx: uint32_t* pid
+ * SYSCALL_PROCESS_ALIVE    ebx: pid, ecx: bool* output (true while the process exists)
+ * SYSCALL_READ_STDIN       ebx: char* buf, ecx: capacity, edx: int32_t* length (-1: no pipe input)
+ * SYSCALL_WRITE_STDOUT     ebx: char*, ecx: length, edx: color (screen, or pipe when captured)
+ * SYSCALL_READ_STDOUT      ebx: char* buf, ecx: capacity, edx: uint32_t* total captured length
+ * SYSCALL_GET_CWD          ebx: uint32_t* output, working directory inode of the caller
  */
 #define SYSCALL_READ           0
 #define SYSCALL_READ_DIRECTORY 1
@@ -41,5 +49,11 @@
 #define SYSCALL_PUTCHAR_AT     14
 #define SYSCALL_YIELD          15
 #define SYSCALL_GET_PID        16
+#define SYSCALL_EXEC_ARGS      17
+#define SYSCALL_PROCESS_ALIVE  18
+#define SYSCALL_READ_STDIN     19
+#define SYSCALL_WRITE_STDOUT   20
+#define SYSCALL_READ_STDOUT    21
+#define SYSCALL_GET_CWD        22
 
 #endif

@@ -91,3 +91,47 @@ void sys_get_time(struct RTCTime *time) {
 void sys_putchar_at(char c, uint8_t row, uint8_t col, uint8_t color) {
     syscall(SYSCALL_PUTCHAR_AT, (uint32_t) c, color, ((uint32_t) row << 8) | col);
 }
+
+/* -- Bonus: separate shell commands (ELF) -- */
+
+int32_t sys_exec_args(const struct ExecRequest *request, uint32_t *pid) {
+    int32_t  retcode = -1;
+    uint32_t new_pid = 0;
+    syscall(SYSCALL_EXEC_ARGS, (uint32_t) request, (uint32_t) &retcode, (uint32_t) &new_pid);
+    if (pid != NULL)
+        *pid = new_pid;
+    return retcode;
+}
+
+bool sys_process_alive(uint32_t pid) {
+    bool alive = false;
+    syscall(SYSCALL_PROCESS_ALIVE, pid, (uint32_t) &alive, 0);
+    return alive;
+}
+
+void sys_wait(uint32_t pid) {
+    while (sys_process_alive(pid))
+        sys_yield();
+}
+
+int32_t sys_read_stdin(char *buf, uint32_t capacity) {
+    int32_t length = -1;
+    syscall(SYSCALL_READ_STDIN, (uint32_t) buf, capacity, (uint32_t) &length);
+    return length;
+}
+
+void sys_write_stdout(const char *str, uint32_t len, uint8_t color) {
+    syscall(SYSCALL_WRITE_STDOUT, (uint32_t) str, len, color);
+}
+
+uint32_t sys_read_stdout(char *buf, uint32_t capacity) {
+    uint32_t total = 0;
+    syscall(SYSCALL_READ_STDOUT, (uint32_t) buf, capacity, (uint32_t) &total);
+    return total;
+}
+
+uint32_t sys_get_cwd(void) {
+    uint32_t inode = 1;
+    syscall(SYSCALL_GET_CWD, (uint32_t) &inode, 0, 0);
+    return inode;
+}

@@ -31,6 +31,76 @@ void write_blocks(const void *ptr, uint32_t logical_block_address, uint8_t block
     }
 }
 
+/* -- Parent given as an absolute path ("/bin"), used to insert separated shell commands -- */
+
+#define ROOT_INODE        1u
+#define DIR_TABLE_MAX     (64 * BLOCK_SIZE)
+
+// Find directory `name` inside directory `parent`, 0 if it does not exist
+static uint32_t find_child_dir(uint32_t parent, const char *name, uint32_t name_len) {
+    static uint8_t table[DIR_TABLE_MAX];
+    memset(table, 0, sizeof(table));
+    struct EXT2DriverRequest req = {
+        .buf          = table,
+        .name         = ".",
+        .name_len     = 1,
+        .parent_inode = parent,
+        .buffer_size  = sizeof(table),
+        .is_directory = true,
+    };
+    if (read_directory(&req) != 0)
+        return 0;
+
+    uint32_t offset = 0;
+    while (offset + sizeof(struct EXT2DirectoryEntry) <= sizeof(table)) {
+        struct EXT2DirectoryEntry *entry = (struct EXT2DirectoryEntry *) (table + offset);
+        if (entry->rec_len < 12)
+            break;
+        char *entry_name = (char *) entry + sizeof(struct EXT2DirectoryEntry);
+        if (entry->inode != 0 && entry->file_type == EXT2_FT_DIR
+            && entry->name_len == name_len && memcmp(entry_name, name, name_len) == 0)
+            return entry->inode;
+        offset += entry->rec_len;
+    }
+    return 0;
+}
+
+// Resolve an absolute directory path, creating missing directories (like mkdir -p). 0 on failure
+static uint32_t resolve_dir_path(const char *path) {
+    uint32_t inode = ROOT_INODE;
+    uint32_t len   = strlen(path), i = 0;
+    while (i < len) {
+        while (i < len && path[i] == '/')
+            i++;
+        uint32_t start = i;
+        while (i < len && path[i] != '/')
+            i++;
+        uint32_t comp_len = i - start;
+        if (comp_len == 0)
+            continue;
+
+        uint32_t child = find_child_dir(inode, path + start, comp_len);
+        if (child == 0) {
+            struct EXT2DriverRequest mkdir_req = {
+                .buf          = NULL,
+                .name         = (char *) path + start,
+                .name_len     = comp_len,
+                .parent_inode = inode,
+                .buffer_size  = 0,
+                .is_directory = true,
+            };
+            if (write(&mkdir_req) != 0)
+                return 0;
+            printf("Created directory: %.*s\n", (int) comp_len, path + start);
+            child = find_child_dir(inode, path + start, comp_len);
+            if (child == 0)
+                return 0;
+        }
+        inode = child;
+    }
+    return inode;
+}
+
 int main(int argc, char *argv[]) {
     int argi = 1;
     if (argc >= 2 && strcmp(argv[1], "-f") == 0) {
@@ -39,7 +109,8 @@ int main(int argc, char *argv[]) {
     }
 
     if (argc - argi < 3) {
-        fprintf(stderr, "Usage: inserter [-f] <file> <parent_inode> <storage.bin>\n");
+        fprintf(stderr, "Usage: inserter [-f] <file> <parent_inode | /absolute/dir> <storage.bin>\n");
+        fprintf(stderr, "  parent may be an absolute path, missing directories are created\n");
         fprintf(stderr, "  -f : replace if the entry already exists\n");
         exit(1);
     }
@@ -95,7 +166,16 @@ int main(int argc, char *argv[]) {
     request.name = name;
     request.name_len = filename_length;
     request.is_directory = false;
-    sscanf(parent_str, "%u", &request.parent_inode);
+    if (parent_str[0] == '/') {
+        request.parent_inode = resolve_dir_path(parent_str);
+        if (request.parent_inode == 0) {
+            fprintf(stderr, "inserter: cannot create directory '%s'\n", parent_str);
+            fclose(fptr);
+            exit(1);
+        }
+    } else {
+        sscanf(parent_str, "%u", &request.parent_inode);
+    }
     sscanf(target_path, "%s", request.name);
 
     reqread = request;

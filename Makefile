@@ -25,13 +25,18 @@ all: build
 build: iso
 clean:
 	rm -rf *.o *.iso $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel $(OUTPUT_FOLDER)/iso \
-		$(OUTPUT_FOLDER)/inserter $(OUTPUT_FOLDER)/shell $(OUTPUT_FOLDER)/clock $(OUTPUT_FOLDER)/hello
+		$(OUTPUT_FOLDER)/inserter $(OUTPUT_FOLDER)/shell $(OUTPUT_FOLDER)/clock $(OUTPUT_FOLDER)/hello \
+		$(CMD_OUTPUT)
+
+# 4 MiB EXT2 + 4 MiB swap area. An old 4 MiB disk is grown, its files are kept.
+DISK_SIZE = 8M
 
 disk: $(DISK_IMAGE)
+	@[ $$(stat -c %s $(DISK_IMAGE)) -ge 8388608 ] || qemu-img resize -f raw $(DISK_IMAGE) $(DISK_SIZE) > /dev/null
 
 $(DISK_IMAGE):
 	@mkdir -p $(OUTPUT_FOLDER)
-	@qemu-img create -f raw $@ 4M
+	@qemu-img create -f raw $@ $(DISK_SIZE)
 
 
 inserter:
@@ -88,7 +93,33 @@ insert-hello: disk inserter user-hello
 	@echo Inserting hello into root directory...
 	@cd $(OUTPUT_FOLDER); ./inserter -f hello 1 $(DISK_NAME).bin
 
-insert-user: insert-shell insert-clock insert-hello
+# Bonus: separate shell commands. Every command is its own ELF32 executable
+# (book 4.3.6: crt0 + linker.ld in src/user/cmd), inserted into /bin on the disk.
+CMD_FOLDER     = $(SOURCE_FOLDER)/user/cmd
+CMD_OUTPUT     = $(OUTPUT_FOLDER)/cmd
+COMMANDS       = ls mkdir cat cp rm mv find grep memtest
+CMD_LIB_OBJS   = $(CMD_OUTPUT)/crt0-cmd.o $(CMD_OUTPUT)/cmdlib.o $(CMD_OUTPUT)/syscall.o $(CMD_OUTPUT)/string.o
+
+user-commands:
+	@mkdir -p $(CMD_OUTPUT)
+	@$(ASM) $(AFLAGS) $(CMD_FOLDER)/crt0-cmd.s -o $(CMD_OUTPUT)/crt0-cmd.o
+	@$(CC) $(CFLAGS) -fno-pie $(CMD_FOLDER)/cmdlib.c -o $(CMD_OUTPUT)/cmdlib.o
+	@$(CC) $(CFLAGS) -fno-pie $(SOURCE_FOLDER)/user/syscall.c -o $(CMD_OUTPUT)/syscall.o
+	@$(CC) $(CFLAGS) -fno-pie $(SOURCE_FOLDER)/stdlib/string.c -o $(CMD_OUTPUT)/string.o
+	@for cmd in $(COMMANDS); do \
+		$(CC) $(CFLAGS) -fno-pie $(CMD_FOLDER)/$$cmd.c -o $(CMD_OUTPUT)/$$cmd.o || exit 1; \
+		$(LIN) -T $(CMD_FOLDER)/linker.ld -melf_i386 $(CMD_LIB_OBJS) $(CMD_OUTPUT)/$$cmd.o \
+			-o $(CMD_OUTPUT)/$$cmd || exit 1; \
+	done
+	@rm -f $(CMD_OUTPUT)/*.o
+	@echo Linking separated shell commands as ELF32 executables...
+	@size $(addprefix $(CMD_OUTPUT)/,$(COMMANDS))
+
+insert-commands: disk inserter user-commands
+	@echo Inserting separated shell commands into /bin...
+	@cd $(CMD_OUTPUT); for cmd in $(COMMANDS); do ../inserter -f $$cmd /bin ../$(DISK_NAME).bin || exit 1; done
+
+insert-user: insert-shell insert-clock insert-hello insert-commands
 
 kernel:
 	@$(ASM) $(AFLAGS) src/kernel-entrypoint.s -o bin/kernel-entrypoint.o
@@ -104,8 +135,10 @@ kernel:
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/filesystem/ext2.c -o $(OUTPUT_FOLDER)/ext2.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/stdlib/string.c -o $(OUTPUT_FOLDER)/string.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/memory/paging.c -o $(OUTPUT_FOLDER)/paging.o
+	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/memory/swap.c -o $(OUTPUT_FOLDER)/swap.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/process/process.c -o $(OUTPUT_FOLDER)/process.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/process/scheduler.c -o $(OUTPUT_FOLDER)/scheduler.o
+	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/process/pipe.c -o $(OUTPUT_FOLDER)/pipe.o
 	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/process/context-switch.s -o $(OUTPUT_FOLDER)/context-switch.o
 	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/intsetup.s -o $(OUTPUT_FOLDER)/intsetup.o
 
@@ -122,4 +155,4 @@ iso: kernel
 	@genisoimage -R -b boot/grub/grub1 -no-emul-boot -boot-load-size 4 -A os -input-charset utf8 -boot-info-table -o $(OUTPUT_FOLDER)/$(ISO_NAME).iso $(OUTPUT_FOLDER)/iso
 	@rm -r $(OUTPUT_FOLDER)/iso/
 
-.PHONY: run all build clean disk kernel iso inserter user-shell insert-shell user-clock insert-clock user-hello insert-hello insert-user
+.PHONY: run all build clean disk kernel iso inserter user-shell insert-shell user-clock insert-clock user-hello insert-hello insert-user user-commands insert-commands

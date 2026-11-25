@@ -6,12 +6,11 @@
 #define ROOT_INODE      1
 #define LINE_MAX        256
 #define PATH_MAX        256
-#define ARG_MAX         4
-#define FIND_DEPTH_MAX  16
+#define ARG_MAX         EXEC_ARGC_MAX
 #define DIR_BUFFER_SIZE (32 * BLOCK_SIZE)
-#define FILE_BUFFER_SIZE (128 * BLOCK_SIZE)
+#define FILE_BUFFER_SIZE (2 * BLOCK_SIZE)   // only used to read /.path
 #define PIPE_MAX        8
-#define PIPE_BUFFER_SIZE (32 * 1024)
+#define KEY_ESCAPE      0x1B
 
 #define COLOR_TEXT   0x7
 #define COLOR_PROMPT 0xA
@@ -121,11 +120,6 @@ static struct EXT2DirectoryEntry *next_entry(uint32_t *offset) {
     return NULL;
 }
 
-static bool is_dot_entry(struct EXT2DirectoryEntry *entry) {
-    char *name = entry_name(entry);
-    return name_equal(name, entry->name_len, ".", 1) || name_equal(name, entry->name_len, "..", 2);
-}
-
 // Find `name` inside directory `dir`. Returns the inode (0 if missing) and sets *type
 static uint32_t lookup(uint32_t dir, const char *name, uint32_t name_len, uint8_t *type) {
     if (!load_dir(dir))
@@ -193,24 +187,27 @@ static bool split_path(const char *path, uint32_t *parent, const char **name, ui
 /* -- Commands -- */
 
 static void cmd_help(void) {
-    out_print("Commands:\n", COLOR_TEXT);
+    out_print("Built-in commands:\n", COLOR_TEXT);
     out_print("  cd [dir]        change directory\n", COLOR_TEXT);
+    out_print("  exec <file> [args]  run program in the background\n", COLOR_TEXT);
+    out_print("  ps              list running processes\n", COLOR_TEXT);
+    out_print("  kill <pid>      terminate a process\n", COLOR_TEXT);
+    out_print("  export [PATH=a:b]  show or set PATH (saved in /.path)\n", COLOR_TEXT);
+    out_print("                  add: export PATH=$PATH:/dir\n", COLOR_TEXT);
+    out_print("  clear           clear screen\n", COLOR_TEXT);
+    out_print("Programs in /bin (separate ELF executables, found through PATH):\n", COLOR_TEXT);
     out_print("  ls [dir]        list directory\n", COLOR_TEXT);
     out_print("  mkdir <dir>     create directory\n", COLOR_TEXT);
-    out_print("  cat <file>      print file\n", COLOR_TEXT);
+    out_print("  cat [file]      print file (or pipe input)\n", COLOR_TEXT);
     out_print("  cp <src> <dst>  copy file\n", COLOR_TEXT);
     out_print("  rm <path>       remove file or empty directory\n", COLOR_TEXT);
     out_print("  mv <src> <dst>  move or rename file\n", COLOR_TEXT);
     out_print("  find <name>     search by name from /\n", COLOR_TEXT);
-    out_print("  grep <pat> [file]  print lines containing pat\n", COLOR_TEXT);
-    out_print("  exec <file>     run program as a new process\n", COLOR_TEXT);
-    out_print("  ps              list running processes\n", COLOR_TEXT);
-    out_print("  kill <pid>      terminate a process\n", COLOR_TEXT);
-    out_print("  export [PATH=a:b]  show or set PATH (saved in /.path)\n", COLOR_TEXT);
-    out_print("  <program>       run a program found in PATH\n", COLOR_TEXT);
-    out_print("  clear           clear screen\n", COLOR_TEXT);
+    out_print("  grep <regex> [file]  print lines matching regex\n", COLOR_TEXT);
+    out_print("  <program> [args] [&]  run a program from PATH, & = background\n", COLOR_TEXT);
+    out_print("  ESC             stop the program running in the foreground\n", COLOR_TEXT);
     out_print("  a | b           pipe output of a into b\n", COLOR_TEXT);
-    out_print("                  e.g. ls | grep txt, cat f | grep \"a b\"\n", COLOR_TEXT);
+    out_print("                  e.g. ls | grep txt, cat f | grep \"^a[ab]b$\"\n", COLOR_TEXT);
 }
 
 // Apply path to cwd_path textually (inode resolution is already done by the caller)
@@ -273,311 +270,6 @@ static void cmd_cd(int argc, char **argv) {
     cwd_inode = inode;
 }
 
-static void cmd_ls(int argc, char **argv) {
-    const char *path = argc >= 2 ? argv[1] : ".";
-    uint32_t inode = resolve_dir(path, str_len(path));
-    if (inode == 0 || !load_dir(inode)) {
-        print_error("ls", path, "no such directory");
-        return;
-    }
-
-    uint32_t offset = 0;
-    struct EXT2DirectoryEntry *entry;
-    while ((entry = next_entry(&offset)) != NULL) {
-        if (is_dot_entry(entry))
-            continue;
-        bool is_dir = entry->file_type == EXT2_FT_DIR;
-        out_puts(entry_name(entry), entry->name_len, is_dir ? COLOR_DIR : COLOR_TEXT);
-        if (is_dir)
-            out_putchar('/', COLOR_DIR);
-        out_putchar('\n', COLOR_TEXT);
-    }
-}
-
-static void cmd_mkdir(int argc, char **argv) {
-    if (argc < 2) {
-        print_error("mkdir", NULL, "missing operand");
-        return;
-    }
-    uint32_t    parent, name_len;
-    const char *name;
-    if (!split_path(argv[1], &parent, &name, &name_len)) {
-        print_error("mkdir", argv[1], "invalid path");
-        return;
-    }
-
-    struct EXT2DriverRequest req = {
-        .buf          = NULL,
-        .name         = (char*) name,
-        .name_len     = name_len,
-        .parent_inode = parent,
-        .buffer_size  = 0,
-        .is_directory = true,
-    };
-    int8_t ret = sys_write(&req);
-    if (ret == 1)
-        print_error("mkdir", argv[1], "already exists");
-    else if (ret != 0)
-        print_error("mkdir", argv[1], "failed (disk full?)");
-}
-
-/**
- * Read the file at path into file_buffer and set *size. Prints an error and returns false on failure.
- * read() does not report the file size, so it is found by binary searching the smallest
- * buffer_size that read() accepts. A failing probe stops before touching the data blocks.
- */
-static bool load_file(const char *cmd, const char *path, uint32_t *size) {
-    uint32_t    parent, name_len;
-    const char *name;
-    if (!split_path(path, &parent, &name, &name_len)) {
-        print_error(cmd, path, "no such file");
-        return false;
-    }
-
-    struct EXT2DriverRequest req = {
-        .buf          = file_buffer,
-        .name         = (char*) name,
-        .name_len     = name_len,
-        .parent_inode = parent,
-        .buffer_size  = FILE_BUFFER_SIZE,
-        .is_directory = false,
-    };
-    int8_t ret = sys_read(&req);
-    if (ret == 1) {
-        print_error(cmd, path, "is a directory");
-        return false;
-    }
-    if (ret == 2) {
-        print_error(cmd, path, "file too large");
-        return false;
-    }
-    if (ret != 0) {
-        print_error(cmd, path, "no such file");
-        return false;
-    }
-
-    uint32_t lo = 0, hi = FILE_BUFFER_SIZE;
-    while (lo < hi) {
-        uint32_t mid = lo + (hi - lo) / 2;
-        req.buffer_size = mid;
-        if (sys_read(&req) == 0)
-            hi = mid;
-        else
-            lo = mid + 1;
-    }
-    *size = lo;
-    return true;
-}
-
-static void cmd_cat(int argc, char **argv, bool has_input) {
-    if (argc < 2) {
-        if (!has_input) {
-            print_error("cat", NULL, "missing operand");
-            return;
-        }
-        out_puts(pipe_in, pipe_in_len, COLOR_TEXT); // cat with no file copies the pipe input
-        return;
-    }
-    uint32_t size;
-    if (!load_file("cat", argv[1], &size))
-        return;
-    out_puts((char*) file_buffer, size, COLOR_TEXT);
-    if (size > 0 && file_buffer[size - 1] != '\n')
-        out_putchar('\n', COLOR_TEXT);
-}
-
-// Copy file src to dst (a new name, or an existing directory). Returns true on success
-static bool copy_file(const char *cmd, const char *src, const char *dst) {
-    uint32_t size;
-    if (!load_file(cmd, src, &size))
-        return false;
-    if (size == 0) {
-        print_error(cmd, src, "cannot copy an empty file");
-        return false;
-    }
-
-    uint32_t    parent, name_len;
-    const char *name;
-    uint32_t    dst_dir = resolve_dir(dst, str_len(dst));
-    if (dst_dir != 0) {
-        // Copy into the directory, keeping the source name
-        uint32_t src_parent;
-        if (!split_path(src, &src_parent, &name, &name_len))
-            return false;
-        parent = dst_dir;
-    } else if (!split_path(dst, &parent, &name, &name_len)) {
-        print_error(cmd, dst, "no such directory");
-        return false;
-    }
-
-    struct EXT2DriverRequest req = {
-        .buf          = file_buffer,
-        .name         = (char*) name,
-        .name_len     = name_len,
-        .parent_inode = parent,
-        .buffer_size  = size,
-        .is_directory = false,
-    };
-    int8_t ret = sys_write(&req);
-    if (ret == 1) {
-        print_error(cmd, dst, "already exists");
-        return false;
-    }
-    if (ret != 0) {
-        print_error(cmd, dst, "failed (disk full?)");
-        return false;
-    }
-    return true;
-}
-
-static void cmd_cp(int argc, char **argv) {
-    if (argc < 3) {
-        print_error("cp", NULL, "usage: cp <src> <dst>");
-        return;
-    }
-    copy_file("cp", argv[1], argv[2]);
-}
-
-// Delete a file, or an empty directory. Returns the delete() return code
-static int8_t remove_path(const char *path, bool is_directory) {
-    uint32_t    parent, name_len;
-    const char *name;
-    if (!split_path(path, &parent, &name, &name_len))
-        return 1;
-
-    struct EXT2DriverRequest req = {
-        .buf          = NULL,
-        .name         = (char*) name,
-        .name_len     = name_len,
-        .parent_inode = parent,
-        .buffer_size  = 0,
-        .is_directory = is_directory,
-    };
-    return sys_delete(&req);
-}
-
-static void cmd_rm(int argc, char **argv) {
-    if (argc < 2) {
-        print_error("rm", NULL, "missing operand");
-        return;
-    }
-    int8_t ret = remove_path(argv[1], false);
-    if (ret == 1)
-        ret = remove_path(argv[1], true);
-
-    if (ret == 1)
-        print_error("rm", argv[1], "no such file or directory");
-    else if (ret == 2)
-        print_error("rm", argv[1], "directory not empty");
-    else if (ret != 0)
-        print_error("rm", argv[1], "failed");
-}
-
-static void cmd_mv(int argc, char **argv) {
-    if (argc < 3) {
-        print_error("mv", NULL, "usage: mv <src> <dst>");
-        return;
-    }
-    if (!copy_file("mv", argv[1], argv[2]))
-        return;
-    if (remove_path(argv[1], false) != 0)
-        print_error("mv", argv[1], "copied but failed to remove source");
-}
-
-/* -- find -- */
-
-static char     find_path[PATH_MAX];
-static uint32_t find_count;
-
-// Depth first search. dir_buffer is shared, so it is reloaded after visiting a child directory
-static void find_in(uint32_t dir, uint32_t path_len, const char *name, uint32_t name_len, uint32_t depth) {
-    if (depth >= FIND_DEPTH_MAX || !load_dir(dir))
-        return;
-
-    uint32_t offset = 0;
-    struct EXT2DirectoryEntry *entry;
-    while ((entry = next_entry(&offset)) != NULL) {
-        if (is_dot_entry(entry))
-            continue;
-
-        uint32_t child_len = path_len + 1 + entry->name_len;
-        if (child_len >= PATH_MAX)
-            continue;
-        find_path[path_len] = '/';
-        memcpy(find_path + path_len + 1, entry_name(entry), entry->name_len);
-
-        bool is_dir = entry->file_type == EXT2_FT_DIR;
-        if (name_equal(entry_name(entry), entry->name_len, name, name_len)) {
-            out_puts(find_path, child_len, is_dir ? COLOR_DIR : COLOR_TEXT);
-            out_putchar('\n', COLOR_TEXT);
-            find_count++;
-        }
-
-        if (is_dir) {
-            find_in(entry->inode, child_len, name, name_len, depth + 1);
-            if (!load_dir(dir))
-                return;
-        }
-    }
-}
-
-static void cmd_find(int argc, char **argv) {
-    if (argc < 2) {
-        print_error("find", NULL, "missing operand");
-        return;
-    }
-    find_count = 0;
-    find_in(ROOT_INODE, 0, argv[1], str_len(argv[1]), 0);
-    if (find_count == 0)
-        print_error("find", argv[1], "not found");
-}
-
-/* -- grep -- */
-
-static bool contains_pattern(const char *text, uint32_t len, const char *pat, uint32_t pat_len) {
-    if (pat_len == 0)
-        return true;
-    for (uint32_t i = 0; i + pat_len <= len; i++) {
-        if (memcmp(text + i, pat, pat_len) == 0)
-            return true;
-    }
-    return false;
-}
-
-// Print every line of text[0..size) that contains pat (plain substring match, no regex)
-static void grep_text(const char *text, uint32_t size, const char *pat, uint32_t pat_len) {
-    uint32_t start = 0;
-    while (start < size) {
-        uint32_t end = start;
-        while (end < size && text[end] != '\n')
-            end++;
-        if (contains_pattern(text + start, end - start, pat, pat_len)) {
-            out_puts(text + start, end - start, COLOR_TEXT);
-            out_putchar('\n', COLOR_TEXT);
-        }
-        start = end + 1;
-    }
-}
-
-static void cmd_grep(int argc, char **argv, bool has_input) {
-    if (argc < 2) {
-        print_error("grep", NULL, "usage: grep <pattern> [file]");
-        return;
-    }
-    const char *pat     = argv[1];
-    uint32_t    pat_len = str_len(pat);
-
-    if (argc >= 3) {
-        uint32_t size;
-        if (load_file("grep", argv[2], &size))
-            grep_text((char*) file_buffer, size, pat, pat_len);
-    } else if (has_input) {
-        grep_text(pipe_in, pipe_in_len, pat, pat_len);
-    } else {
-        print_error("grep", NULL, "missing file or pipe input");
-    }
-}
-
 /* -- Process commands -- */
 
 static void out_uint(uint32_t value, uint32_t width, uint8_t color) {
@@ -613,9 +305,41 @@ static bool parse_uint(const char *s, uint32_t *value) {
     return true;
 }
 
-// Start path in a new process. The kernel assigns the PID; the shell discovers
-// it by asking PS for the highest PID, as EXEC only returns a status code.
-static void exec_program(const char *cmd, const char *path) {
+static void print_exec_error(const char *cmd, const char *path, int32_t ret) {
+    switch (ret) {
+        case PROCESS_CREATE_FAIL_MAX_PROCESS_EXCEEDED: print_error(cmd, path, "too many processes"); break;
+        case PROCESS_CREATE_FAIL_INVALID_ENTRYPOINT:   print_error(cmd, path, "invalid entrypoint"); break;
+        case PROCESS_CREATE_FAIL_NOT_ENOUGH_MEMORY:    print_error(cmd, path, "not enough memory or program too large"); break;
+        case PROCESS_CREATE_FAIL_FS_READ_FAILURE:      print_error(cmd, path, "no such file"); break;
+        case PROCESS_CREATE_FAIL_INVALID_EXECUTABLE:   print_error(cmd, path, "not a valid executable"); break;
+        case PROCESS_CREATE_FAIL_INVALID_ARGUMENT:     print_error(cmd, path, "too many or too long arguments"); break;
+        default:                                       print_error(cmd, path, "failed"); break;
+    }
+}
+
+/**
+ * Wait until the foreground process pid exits, giving the CPU to other processes meanwhile.
+ * ESC stops it, so a program that never ends (e.g. clock) cannot lock the shell.
+ */
+static void wait_foreground(uint32_t pid) {
+    while (sys_process_alive(pid)) {
+        if (sys_getchar() == KEY_ESCAPE) {
+            sys_kill(pid);
+            print("^[ stopped\n", COLOR_ERROR);
+            break;
+        }
+        sys_yield();
+    }
+}
+
+/**
+ * Run the program at path as a new process with argv (argv[0] = command name).
+ * Foreground: the shell gives it its cwd and pipe input, waits for it to exit (no zombie
+ * or orphan is left behind), then collects its output when it feeds a pipe.
+ * Background (exec, or a trailing &): the shell only prints the new PID.
+ */
+static void run_program(const char *cmd, const char *path, int argc, char **argv,
+                        bool has_input, bool background) {
     uint32_t    parent, name_len;
     const char *name;
     if (!split_path(path, &parent, &name, &name_len)) {
@@ -623,46 +347,54 @@ static void exec_program(const char *cmd, const char *path) {
         return;
     }
 
-    struct EXT2DriverRequest req = {
-        .buf          = (void*) 0,   // user programs are flat binaries linked at 0
-        .name         = (char*) name,
-        .name_len     = name_len,
-        .parent_inode = parent,
-        .buffer_size  = 0,
-        .is_directory = false,
+    bool capture = capture_output && !background;
+    struct ExecRequest req = {
+        .file = {
+            .buf          = (void*) 0,   // flat binaries are linked at 0, ELF uses its own entrypoint
+            .name         = (char*) name,
+            .name_len     = name_len,
+            .parent_inode = parent,
+            .buffer_size  = 0,
+            .is_directory = false,
+        },
+        .argc           = (uint32_t) argc,
+        .argv           = argv,
+        .cwd_inode      = cwd_inode,
+        .stdin_buf      = has_input && !background ? pipe_in : NULL,
+        .stdin_len      = pipe_in_len,
+        .capture_stdout = capture,
     };
-    int32_t ret = sys_exec(&req);
-    switch (ret) {
-        case 0: {
-            struct ProcessInfo info[PROCESS_COUNT_MAX];
-            uint32_t count = sys_ps(info, PROCESS_COUNT_MAX), pid = 0;
-            for (uint32_t i = 0; i < count; i++)
-                if (info[i].pid > pid)
-                    pid = info[i].pid;
-            out_print("started ", COLOR_TEXT);
-            out_puts(name, name_len, COLOR_TEXT);
-            // A short-lived program may exit before PS runs, leaving pid 0.
-            if (pid > 0) {
-                out_print(" with pid ", COLOR_TEXT);
-                out_uint(pid, 0, COLOR_TEXT);
-            }
-            out_putchar('\n', COLOR_TEXT);
-            break;
-        }
-        case 1:  print_error(cmd, path, "too many processes"); break;
-        case 2:  print_error(cmd, path, "invalid entrypoint"); break;
-        case 3:  print_error(cmd, path, "not enough memory or program too large"); break;
-        case 4:  print_error(cmd, path, "no such file"); break;
-        default: print_error(cmd, path, "failed"); break;
+    uint32_t pid = 0;
+    int32_t  ret = sys_exec_args(&req, &pid);
+    if (ret != PROCESS_CREATE_SUCCESS) {
+        print_exec_error(cmd, path, ret);
+        return;
+    }
+
+    if (background) {
+        out_print("started ", COLOR_TEXT);
+        out_puts(name, name_len, COLOR_TEXT);
+        out_print(" with pid ", COLOR_TEXT);
+        out_uint(pid, 0, COLOR_TEXT);
+        out_putchar('\n', COLOR_TEXT);
+        return;
+    }
+
+    wait_foreground(pid);
+    if (capture) {
+        uint32_t total = sys_read_stdout(pipe_out, PIPE_BUFFER_SIZE);
+        pipe_out_len     = total < PIPE_BUFFER_SIZE ? total : PIPE_BUFFER_SIZE;
+        output_truncated = total > PIPE_BUFFER_SIZE;
     }
 }
 
-static void cmd_exec(int argc, char **argv) {
+// exec <file> [args...]: always runs the program in the background
+static void cmd_exec(int argc, char **argv, bool has_input) {
     if (argc < 2) {
         print_error("exec", NULL, "missing operand");
         return;
     }
-    exec_program("exec", argv[1]);
+    run_program("exec", argv[1], argc - 1, argv + 1, has_input, true);
 }
 
 static void cmd_ps(void) {
@@ -710,8 +442,8 @@ static void cmd_kill(int argc, char **argv) {
 #define PATH_FILE_NAME_LEN 5
 #define PATH_VAR_MAX       128
 
-static char     path_var[PATH_VAR_MAX] = "/";   // default: programs in root
-static uint32_t path_var_len = 1;
+static char     path_var[PATH_VAR_MAX] = "/bin:/";   // default: commands in /bin, programs in root
+static uint32_t path_var_len = 6;
 
 // Read /.path once at shell start. Keep the default if it does not exist yet.
 static void path_load(void) {
@@ -762,13 +494,29 @@ static void cmd_export(int argc, char **argv) {
         print_error("export", argv[1], "only PATH=<dir>[:<dir>...] is supported");
         return;
     }
+    // "$PATH" is replaced by the current value, so folders can be added:
+    // export PATH=$PATH:/apps   or   export PATH=/apps:$PATH
     const char *value = argv[1] + 5;
-    uint32_t    len   = str_len(value);
-    if (len >= PATH_VAR_MAX) {
-        print_error("export", NULL, "PATH too long");
-        return;
+    char        next[PATH_VAR_MAX];
+    uint32_t    len = 0;
+    while (*value) {
+        const char *part     = value;
+        uint32_t    part_len = 1;
+        if (memcmp(value, "$PATH", 5) == 0) {
+            part     = path_var;
+            part_len = path_var_len;
+            value   += 5;
+        } else {
+            value++;
+        }
+        if (len + part_len >= PATH_VAR_MAX) {
+            print_error("export", NULL, "PATH too long");
+            return;
+        }
+        memcpy(next + len, part, part_len);
+        len += part_len;
     }
-    memcpy(path_var, value, len);
+    memcpy(path_var, next, len);
     path_var[len] = '\0';
     path_var_len  = len;
     if (!path_save())
@@ -777,7 +525,7 @@ static void cmd_export(int argc, char **argv) {
 
 /**
  * Look for program cmd in every PATH entry (separated by ':'), first match wins.
- * On success full_path holds "<dir>/<cmd>", ready for exec_program().
+ * On success full_path holds "<dir>/<cmd>", ready for run_program().
  */
 static bool find_in_path(const char *cmd, uint32_t cmd_len, char *full_path) {
     uint32_t i = 0;
@@ -890,24 +638,8 @@ static void run_command(int argc, char **argv, bool has_input) {
         sys_clear_screen();
     else if (name_equal(cmd, len, "cd", 2))
         cmd_cd(argc, argv);
-    else if (name_equal(cmd, len, "ls", 2))
-        cmd_ls(argc, argv);
-    else if (name_equal(cmd, len, "mkdir", 5))
-        cmd_mkdir(argc, argv);
-    else if (name_equal(cmd, len, "cat", 3))
-        cmd_cat(argc, argv, has_input);
-    else if (name_equal(cmd, len, "cp", 2))
-        cmd_cp(argc, argv);
-    else if (name_equal(cmd, len, "rm", 2))
-        cmd_rm(argc, argv);
-    else if (name_equal(cmd, len, "mv", 2))
-        cmd_mv(argc, argv);
-    else if (name_equal(cmd, len, "find", 4))
-        cmd_find(argc, argv);
-    else if (name_equal(cmd, len, "grep", 4))
-        cmd_grep(argc, argv, has_input);
     else if (name_equal(cmd, len, "exec", 4))
-        cmd_exec(argc, argv);
+        cmd_exec(argc, argv, has_input);
     else if (name_equal(cmd, len, "ps", 2))
         cmd_ps();
     else if (name_equal(cmd, len, "kill", 4))
@@ -915,10 +647,13 @@ static void run_command(int argc, char **argv, bool has_input) {
     else if (name_equal(cmd, len, "export", 6))
         cmd_export(argc, argv);
     else {
-        // Not a built-in: run it as a program from PATH
+        // Not a built-in: a separate program found through PATH (e.g. /bin/ls)
+        bool background = argc > 1 && name_equal(argv[argc - 1], str_len(argv[argc - 1]), "&", 1);
+        if (background)
+            argc--;
         char full_path[PATH_MAX];
         if (find_in_path(cmd, len, full_path))
-            exec_program(cmd, full_path);
+            run_program(cmd, full_path, argc, argv, has_input, background);
         else
             print_error(cmd, NULL, "command not found, try help");
     }

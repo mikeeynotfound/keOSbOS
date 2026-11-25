@@ -17,4 +17,7 @@ SECTIONS {
     }
     _linker_kernel_virtual_addr_end  = .;
     _linker_kernel_physical_addr_end = . - 0xC0000000;
+
+    /* Only the first 4 MiB of physical memory is mapped for the kernel (kernel-entrypoint.s) */
+    ASSERT(_linker_kernel_physical_addr_end <= 0x400000, "Error: kernel is larger than the 4 MiB kernel mapping")
 }

@@ -28,6 +28,8 @@ Sistem operasi 32-bit x86 sederhana untuk Tugas Besar IF2130 Sistem Operasi 2026
   - [Milestone 2: File System EXT2](#milestone-2-file-system-ext2)
   - [Milestone 3: Paging, User Mode, Shell](#milestone-3-paging-user-mode-shell)
   - [Milestone 4: Process, Scheduler, Multitasking](#milestone-4-process-scheduler-multitasking)
+  - [Bonus: PATH Persistent](#bonus-path-persistent)
+  - [Bonus: Separate Shell Commands (ELF)](#bonus-separate-shell-commands-elf)
   - [Perintah Shell](#perintah-shell)
 - [Struktur Repository](#struktur-repository)
 - [Maskot Kelompok](#maskot-kelompok)
@@ -53,7 +55,7 @@ sudo apt install nasm gcc-multilib binutils genisoimage qemu-system-x86 qemu-uti
 ### Build dan Jalankan
 
 ```bash
-make insert-user    # buat disk, compile dan masukkan shell, clock, serta hello
+make insert-user    # buat disk, compile dan masukkan shell, clock, hello, serta perintah di /bin
 make iso            # compile kernel dan buat bin/OS2025.iso
 qemu-system-i386 -drive file=bin/storage.bin,format=raw,if=ide,index=0,media=disk -cdrom bin/OS2025.iso
 ```
@@ -70,10 +72,11 @@ Kalau `shell` tidak ada di disk, kernel menampilkan pesan error lalu berhenti.
 
 ```bash
 cd bin
-./inserter [-f] <file> <parent_inode> storage.bin
+./inserter [-f] <file> <parent_inode | /folder/absolut> storage.bin
 ```
 
 - `parent_inode` adalah inode folder tujuan. Root adalah inode `1`.
+- Tujuan juga boleh berupa path absolut seperti `/bin`. Folder yang belum ada dibuat otomatis.
 - `-f` menimpa file dengan nama yang sama.
 
 Contoh:
@@ -104,8 +107,15 @@ gcc -g -fsanitize=address,undefined -Isrc tests/ext2_read_test.c  -o /tmp/ext2_r
 gcc -g -fsanitize=address,undefined -Isrc tests/ext2_write_test.c -o /tmp/ext2_write_test && /tmp/ext2_write_test
 
 gcc -g -fsanitize=address,undefined -Isrc -Dmain=shell_main -c src/user/user-shell.c -o /tmp/shell.o
-gcc -g -fsanitize=address,undefined -Isrc tests/user_shell_test.c /tmp/shell.o -o /tmp/user_shell_test && /tmp/user_shell_test
+gcc -g -fsanitize=address,undefined -Isrc -c src/user/cmd/cmdlib.c -o /tmp/cmdlib.o
+for c in ls mkdir cat cp rm mv find grep; do
+    gcc -g -fsanitize=address,undefined -Isrc -Dmain=cmd_${c}_main -c src/user/cmd/$c.c -o /tmp/cmd_$c.o
+done
+gcc -g -fsanitize=address,undefined -Isrc tests/user_shell_test.c /tmp/shell.o /tmp/cmdlib.o /tmp/cmd_*.o \
+    -o /tmp/user_shell_test && /tmp/user_shell_test
 ```
+
+Tes shell menjalankan perintah di `/bin` sebagai "process" tiruan: `main` setiap perintah dipanggil langsung dengan argumen, cwd, input pipe, dan penangkapan output yang diminta shell.
 
 ## Fitur yang Dibuat
 
@@ -163,6 +173,12 @@ Menggunakan EXT2 – IF2130 Edition di disk ATA 4 MiB.
   | 14 | `putchar_at` | tulis karakter di posisi tertentu tanpa menggeser cursor |
   | 15 | `yield` | berikan sisa time slice ke process lain |
   | 16 | `get_pid` | ambil PID process yang sedang berjalan |
+  | 17 | `exec_args` | jalankan program dengan argumen, cwd, dan pengaturan pipe (bonus) |
+  | 18 | `process_alive` | cek apakah process dengan PID tertentu masih ada (bonus) |
+  | 19 | `read_stdin` | baca input pipe milik process (bonus) |
+  | 20 | `write_stdout` | tulis output standar, ke layar atau ke pipe (bonus) |
+  | 21 | `read_stdout` | ambil output process yang ditangkap untuk pipe (bonus) |
+  | 22 | `get_cwd` | ambil inode folder kerja yang diberikan shell (bonus) |
 
 - **Terminal di kernel:** output syscall mendukung `\n`, `\t`, backspace, pindah baris otomatis dan scroll.
 
@@ -179,8 +195,24 @@ Menggunakan EXT2 – IF2130 Edition di disk ATA 4 MiB.
 
 - Perintah yang bukan perintah bawaan shell dicari sebagai program di setiap folder `PATH` (dipisah `:`), berurutan. Contoh: dengan `PATH=/bin:/`, mengetik `clock` menjalankan `/bin/clock` kalau ada, kalau tidak `/clock`.
 - `export PATH=/bin:/` mengubah PATH dan langsung menyimpannya ke file `/.path`. Shell membaca file itu saat mulai, jadi PATH tetap sama setelah reboot. `export` tanpa argumen menampilkan PATH.
-- Nilai awal `PATH=/`, sehingga `hello` dan `clock` bisa dijalankan tanpa `exec`.
+- `$PATH` di dalam nilai diganti dengan PATH saat ini, jadi direktori bisa ditambah tanpa mengetik ulang: `export PATH=$PATH:/apps` (di belakang) atau `export PATH=/apps:$PATH` (di depan). Untuk mengurangi, tulis ulang daftarnya tanpa direktori itu, misalnya `export PATH=/bin`.
+- Nilai awal `PATH=/bin:/`, sehingga perintah di `/bin` serta `hello` dan `clock` di root bisa dijalankan tanpa `exec`.
+- Disk lama yang sudah punya `/.path` tetap memakai PATH yang tersimpan. Jalankan `export PATH=/bin:/` sekali supaya perintah di `/bin` ditemukan.
 - Perintah bawaan selalu didahulukan. Entry PATH yang kosong atau foldernya tidak ada dilewati.
+
+### Bonus: Separate Shell Commands (ELF)
+
+Mengikuti bagian 4.3.6 di buku. Perintah `ls`, `mkdir`, `cat`, `cp`, `rm`, `mv`, `find`, dan `grep` tidak lagi built-in. Setiap perintah adalah program terpisah di `/bin`, sehingga perintah bisa ditambah atau diubah tanpa mengubah shell.
+
+- **Format ELF:** setiap perintah di-link sebagai executable ELF32 dengan `src/user/cmd/linker.ld`, yaitu linker script dari buku (`.text`, `.data`, `.bss` mulai dari `0x0`, align 4 KiB). Simbol debug tetap ada di file, tetapi tidak dimuat ke memori.
+- **ELF loader di kernel:** `process_create_user_process` mengenali header `\x7fELF`, memeriksa header dan setiap segmen `PT_LOAD`, memetakan halamannya, menyalin `p_filesz` byte, mengisi nol sisanya sampai `p_memsz` (`.bss`), lalu mulai di `e_entry`. File yang bukan ELF tetap dimuat sebagai flat binary, jadi `shell`, `clock`, dan `hello` tidak berubah.
+- **crt0 perintah:** `src/user/cmd/crt0-cmd.s` diadaptasi dari `crt0-echo.s` di buku. Kernel menyusun stack awal `ESP -> argc, ESP+4 -> argv[0], ..., ESP+4*(argc+1) -> NULL`. crt0 memanggil `main(argc, argv)`, lalu `exit` dengan nilai kembalian `main`.
+- **Argumen dan folder kerja:** shell menjalankan perintah lewat syscall `exec_args` yang membawa `argv` dan inode folder kerja shell. Perintah membaca folder kerja dengan `get_cwd`, jadi path relatif seperti `ls docs` tetap bekerja.
+- **Tidak ada zombie atau orphan:** shell menunggu perintah sampai selesai, dan `exit` langsung menghapus PCB serta membebaskan memori dan page directory-nya. Tekan `ESC` untuk menghentikan program foreground yang tidak berhenti sendiri.
+- **Pipeline antar process:** kernel menyimpan satu buffer input dan satu buffer output pipe (masing-masing 32 KiB). Output perintah yang bukan tahap terakhir ditangkap lewat `write_stdout`, lalu shell memberikannya sebagai input tahap berikutnya. Pesan error selalu tampil di layar.
+- **Background:** `<program> &` atau `exec <file> [args]` menjalankan program tanpa menunggu, misalnya `clock &`.
+- **Built-in yang tetap di shell:** `cd` dan `export` (mengubah keadaan shell sendiri, sama seperti di Unix), serta `help`, `clear`, `exec`, `ps`, dan `kill`.
+- **Build:** `make user-commands` meng-compile semua perintah ke `bin/cmd/`, dan `make insert-commands` memasukkannya ke `/bin` di disk.
 
 ### Perintah Shell
 
@@ -191,22 +223,26 @@ Path bisa relatif atau absolut, dan bisa memakai `.` serta `..`.
 | `help` | daftar perintah |
 | `clear` | bersihkan layar |
 | `cd [dir]` | pindah folder, tanpa argumen kembali ke `/` |
-| `ls [dir]` | isi folder, folder ditandai `/` |
-| `mkdir <dir>` | buat folder |
-| `cat <file>` | tampilkan isi file |
-| `cp <src> <dst>` | salin file ke nama baru atau ke dalam folder |
-| `rm <path>` | hapus file atau folder kosong |
-| `mv <src> <dst>` | pindah atau ganti nama file |
-| `find <name>` | cari file atau folder dengan nama persis, mulai dari `/` |
-| `grep <pola> [file]` | tampilkan baris yang mengandung pola |
-| `exec <file>` | jalankan program user sebagai process baru |
+| `ls [dir]` | isi folder, folder ditandai `/` (program `/bin/ls`) |
+| `mkdir <dir>` | buat folder (program `/bin/mkdir`) |
+| `cat [file]` | tampilkan isi file, atau input pipe kalau tanpa file (program `/bin/cat`) |
+| `cp <src> <dst>` | salin file ke nama baru atau ke dalam folder (program `/bin/cp`) |
+| `rm <path>` | hapus file atau folder kosong (program `/bin/rm`) |
+| `mv <src> <dst>` | pindah atau ganti nama file (program `/bin/mv`) |
+| `find <name>` | cari file atau folder dengan nama persis, mulai dari `/` (program `/bin/find`) |
+| `grep <regex> [file]` | tampilkan baris yang cocok dengan regex (program `/bin/grep`) |
+| `exec <file> [args]` | jalankan program user sebagai process baru di background |
 | `ps` | tampilkan PID, state, memori, dan nama process |
 | `kill <pid>` | hentikan process selain PID 0 |
-| `export [PATH=a:b]` | tampilkan atau ubah PATH, disimpan di `/.path` |
-| `<program>` | jalankan program yang ditemukan di PATH, sama seperti `exec` |
+| `export [PATH=a:b]` | tampilkan atau ubah PATH, disimpan di `/.path`. `$PATH` di nilai diganti PATH saat ini, misalnya `export PATH=$PATH:/apps` |
+| `<program> [args]` | jalankan program yang ditemukan di PATH dan tunggu sampai selesai |
+| `<program> [args] &` | jalankan program dari PATH di background |
+| `ESC` | hentikan program yang sedang berjalan di foreground |
 | `a \| b` | output `a` jadi input `b`, maksimal 8 tahap |
 
 Argumen yang berisi spasi ditulis di dalam tanda kutip, misalnya `cat notes.txt | grep "apel merah"`.
+
+`grep` memakai subset regex: literal, `.`, `^`, `$`, `*`, `+`, `?`, `[abc]`, `[a-z]`, `[^...]`, escape dengan `\`, dan alternation `|`. Contoh: `grep "^a[ab]b$" data.txt` hanya mencocokkan seluruh baris `aab` atau `ab`.
 
 Batasan saat ini:
 
@@ -215,6 +251,9 @@ Batasan saat ini:
 - File kosong tidak bisa disalin, karena `write` dengan ukuran 0 berarti membuat folder.
 - Ukuran file yang bisa dibaca shell maksimal 64 KiB.
 - Tabel direktori yang bisa dibaca shell maksimal 32 block (16 KiB).
+- Maksimal 16 argumen per perintah, dengan total panjang 512 byte.
+- Output yang dimasukkan ke pipe maksimal 32 KiB, sisanya dipotong.
+- Program flat binary seperti `hello` mencetak langsung ke layar, jadi outputnya tidak ikut masuk pipe.
 
 ## Struktur Repository
 
@@ -230,13 +269,15 @@ src/
 ├── driver/               # keyboard dan CMOS RTC
 ├── filesystem/           # disk ATA dan EXT2
 ├── memory/               # paging dan page directory per process
-├── process/              # PCB, scheduler, dan context switch assembly
+├── process/              # PCB, ELF loader, scheduler, pipe, dan context switch assembly
 ├── text/                 # framebuffer dan terminal
 ├── stdlib/               # memset, memcpy, memcmp, memmove
 ├── user/                 # shell, clock, hello, dan wrapper syscall sisi user
+│   └── cmd/              # perintah terpisah (ELF): ls, mkdir, cat, cp, rm, mv, find, grep,
+│                         # beserta crt0-cmd.s, linker.ld, dan cmdlib.c
 ├── external/             # inserter (program host)
 └── header/               # header semua modul di atas
-tests/                    # tes host untuk EXT2 dan shell
+tests/                    # tes host untuk EXT2, shell, dan perintah terpisah
 ```
 
 ## Maskot Kelompok

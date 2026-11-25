@@ -1,6 +1,5 @@
 #include <stdint.h>
 #include <stdbool.h>
-#include <stddef.h>
 #include "header/stdlib/string.h"
 #include "header/filesystem/ext2.h"
 
@@ -630,8 +629,8 @@ int8_t write(struct EXT2DriverRequest *request) {
     if (request == NULL || request->name == NULL || request->name_len == 0)
         return -1;
 
-bool is_dir = (request->buffer_size == 0);
-    if (!is_dir && request->buf == NULL)
+bool is_dir = request->is_directory;
+    if (!is_dir && request->buffer_size > 0 && request->buf == NULL)
         return -1;
 
     struct EXT2Inode parent;
